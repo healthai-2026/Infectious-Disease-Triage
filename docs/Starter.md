@@ -59,18 +59,18 @@ You are responsible for acquiring the necessary background. The following areas 
 
 ---
 
-### Expected Outcomes (12-Week Plan)
+### Expected Outcomes (8-Week Plan)
 
-The 12 weeks are structured around four phases. Specific milestones should be defined in discussion with your mentor.
+The 8 weeks are structured around four phases. Specific milestones should be defined in discussion with your mentor.
 
-**Weeks 1–3: Foundation**
+**Weeks 1–2: Foundation**
 Complete the PhysioNet credentialing and gain access to MIMIC-IV. Conduct a focused literature review. Define your clinical prediction task (e.g., sepsis-3 onset at 6-hour horizon) and build the cohort extraction pipeline with proper label construction. Deliver a written cohort definition document.
 
-**Weeks 4–6: Baseline Models**
+**Weeks 3–4: Baseline Models**
 Implement at least two baselines: a classical ML model (logistic regression or XGBoost on handcrafted features) and a temporal deep learning model (LSTM or Transformer). Evaluate against published NEWS/qSOFA thresholds. Document performance and failure modes.
 
-**Weeks 7–9: Extension**
+**Weeks 5–6: Extension**
 Add a second input modality (clinical notes via pre-trained embeddings, or waveform features) and measure its contribution via ablation. Optionally, simulate a federated learning scenario using MIMIC-IV and eICU splits. Implement one explainability method and analyze top predictive features.
 
-**Weeks 10–12: Research Output**
+**Weeks 7–8: Research Output**
 Consolidate findings, characterize model behavior under missing data and class imbalance, and write a research report in paper format. Final deliverables: clean, documented code repository and a written report (journal paper style).
