@@ -1,0 +1,26 @@
+# Ignore raw and processed clinical data
+Data/
+data/
+
+# Ignore documentation files as requested
+docs/
+
+# Ignore virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Python caching and build files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.ipynb_checkpoints/
+
+# User-specific or system files
+.DS_Store
+.vscode/
+.idea/
+*.log

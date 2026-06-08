@@ -1,4 +1,3 @@
-
 # Sepsis: Clinical Notes & Definitions
 
 > **Author:** Lakshya Agarwal
