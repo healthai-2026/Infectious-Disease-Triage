@@ -3,7 +3,7 @@ import re
 import numpy as np
 import pandas as pd
 
-DATA_DIR = r"D:\Internship2026\Infectious-Disease-Triage\Data\mimic-iv-clinical-database-demo-2.2"
+DATA_DIR = r"D:\Internship2026\Infectious-Disease-Triage\Data\mimic-iv-3.1"
 PROCESSED_DIR = r"D:\Internship2026\Infectious-Disease-Triage\Data\processed"
 os.makedirs(PROCESSED_DIR, exist_ok=True)
 
@@ -22,74 +22,67 @@ NON_ABX = ['cepacol', 'cepastat', 'racepinephrine', 'epinephrine']
 print("Starting Preprocessing Pipeline...")
 
 print("Loading patients.csv.gz...")
-df_patients = pd.read_csv(os.path.join(DATA_DIR, "hosp", "patients.csv.gz"))
+df_patients = pd.read_csv(os.path.join(DATA_DIR, "hosp", "patients.csv.gz"), usecols=['subject_id', 'gender', 'anchor_age'])
 print("Loading admissions.csv.gz...")
-df_admissions = pd.read_csv(os.path.join(DATA_DIR, "hosp", "admissions.csv.gz"))
+df_admissions = pd.read_csv(os.path.join(DATA_DIR, "hosp", "admissions.csv.gz"), usecols=['subject_id', 'hadm_id'])
 print("Loading icustays.csv.gz...")
-df_icustays = pd.read_csv(os.path.join(DATA_DIR, "icu", "icustays.csv.gz"))
+df_icustays = pd.read_csv(os.path.join(DATA_DIR, "icu", "icustays.csv.gz"), usecols=['subject_id', 'hadm_id', 'stay_id', 'intime', 'outtime'])
 print("Loading microbiologyevents.csv.gz...")
-df_micro = pd.read_csv(os.path.join(DATA_DIR, "hosp", "microbiologyevents.csv.gz"))
-print("Loading prescriptions.csv.gz...")
-df_rx = pd.read_csv(os.path.join(DATA_DIR, "hosp", "prescriptions.csv.gz"))
-print("Loading chartevents.csv.gz...")
-df_chartevents = pd.read_csv(os.path.join(DATA_DIR, "icu", "chartevents.csv.gz"))
-print("Loading labevents.csv.gz...")
-df_labevents = pd.read_csv(os.path.join(DATA_DIR, "hosp", "labevents.csv.gz"))
-print("Loading inputevents.csv.gz...")
-df_vaso = pd.read_csv(os.path.join(DATA_DIR, "icu", "inputevents.csv.gz"))
-print("Loading outputevents.csv.gz...")
-df_uop = pd.read_csv(os.path.join(DATA_DIR, "icu", "outputevents.csv.gz"))
+df_micro = pd.read_csv(os.path.join(DATA_DIR, "hosp", "microbiologyevents.csv.gz"), usecols=['subject_id', 'hadm_id', 'charttime', 'chartdate'])
 
+print("Loading and filtering prescriptions.csv.gz...")
+pattern = '|'.join(ABX_PATTERNS)
+rx_chunks = []
+for chunk in pd.read_csv(os.path.join(DATA_DIR, "hosp", "prescriptions.csv.gz"), usecols=['subject_id', 'hadm_id', 'drug', 'starttime'], chunksize=500000):
+    chunk_filtered = chunk[chunk['drug'].str.contains(pattern, case=False, na=False)].copy()
+    for non_ab in NON_ABX:
+        chunk_filtered = chunk_filtered[~chunk_filtered['drug'].str.contains(non_ab, case=False, na=False)]
+    rx_chunks.append(chunk_filtered)
+df_rx_abx = pd.concat(rx_chunks)
+df_rx_abx['starttime'] = pd.to_datetime(df_rx_abx['starttime'])
+
+print("Loading and filtering inputevents.csv.gz...")
 vaso_itemids = [221906, 221289, 229617, 221662, 221653, 222315]
-df_vaso = df_vaso[df_vaso['itemid'].isin(vaso_itemids)].copy()
+vaso_chunks = []
+for chunk in pd.read_csv(os.path.join(DATA_DIR, "icu", "inputevents.csv.gz"), usecols=['stay_id', 'itemid', 'starttime', 'endtime', 'rate'], chunksize=500000):
+    chunk_filtered = chunk[chunk['itemid'].isin(vaso_itemids)]
+    vaso_chunks.append(chunk_filtered)
+df_vaso = pd.concat(vaso_chunks)
 df_vaso['starttime'] = pd.to_datetime(df_vaso['starttime'])
 df_vaso['endtime'] = pd.to_datetime(df_vaso['endtime'])
 
+print("Loading and filtering outputevents.csv.gz...")
 uop_itemids = [226559, 226566, 226627, 226631]
-df_uop = df_uop[df_uop['itemid'].isin(uop_itemids)].copy()
+uop_chunks = []
+for chunk in pd.read_csv(os.path.join(DATA_DIR, "icu", "outputevents.csv.gz"), usecols=['stay_id', 'itemid', 'charttime', 'value'], chunksize=500000):
+    chunk_filtered = chunk[chunk['itemid'].isin(uop_itemids)]
+    uop_chunks.append(chunk_filtered)
+df_uop = pd.concat(uop_chunks)
 df_uop['charttime'] = pd.to_datetime(df_uop['charttime'])
 
 print("Identifying suspected infections at hadm_id level...")
 df_micro_temp = df_micro.copy()
 df_micro_temp['charttime'] = pd.to_datetime(df_micro_temp['charttime'].fillna(df_micro_temp['chartdate']))
 
-df_rx_temp = df_rx.copy()
-df_rx_temp['starttime'] = pd.to_datetime(df_rx_temp['starttime'])
+# Vectorized matching of microbiology cultures and antibiotic prescriptions
+df_merged_micro_rx = pd.merge(
+    df_micro_temp[['subject_id', 'hadm_id', 'charttime']], 
+    df_rx_abx[['hadm_id', 'starttime']], 
+    on='hadm_id'
+)
 
-pattern = '|'.join(ABX_PATTERNS)
-df_rx_abx = df_rx_temp[df_rx_temp['drug'].str.contains(pattern, case=False, na=False)].copy()
-for non_ab in NON_ABX:
-    df_rx_abx = df_rx_abx[~df_rx_abx['drug'].str.contains(non_ab, case=False, na=False)]
+# Filter for the infection suspected window: abx within [culture - 24h, culture + 72h]
+df_valid_si_events = df_merged_micro_rx[
+    (df_merged_micro_rx['starttime'] >= df_merged_micro_rx['charttime'] - pd.Timedelta(hours=24)) &
+    (df_merged_micro_rx['starttime'] <= df_merged_micro_rx['charttime'] + pd.Timedelta(hours=72))
+].copy()
 
-si_records = []
-micro_grouped = df_micro_temp.groupby('hadm_id')
-rx_grouped = df_rx_abx.groupby('hadm_id')
-
-for hadm_id, micro_group in micro_grouped:
-    if pd.isna(hadm_id) or hadm_id not in rx_grouped.groups:
-        continue
-    rx_group = rx_grouped.get_group(hadm_id)
-    
-    for _, micro_row in micro_group.iterrows():
-        t_culture = micro_row['charttime']
-        valid_abx = rx_group[
-            (rx_group['starttime'] >= t_culture - pd.Timedelta(hours=24)) &
-            (rx_group['starttime'] <= t_culture + pd.Timedelta(hours=72))
-        ]
-        for _, rx_row in valid_abx.iterrows():
-            t_abx = rx_row['starttime']
-            t_si = min(t_culture, t_abx)
-            si_records.append({
-                'subject_id': micro_row['subject_id'],
-                'hadm_id': hadm_id,
-                't_culture': t_culture,
-                't_abx': t_abx,
-                't_si': t_si
-            })
-
-df_si = pd.DataFrame(si_records)
-if not df_si.empty:
+if not df_valid_si_events.empty:
+    df_valid_si_events['t_si'] = np.minimum(df_valid_si_events['charttime'], df_valid_si_events['starttime'])
+    df_si = df_valid_si_events.rename(columns={'charttime': 't_culture', 'starttime': 't_abx'})
     df_si = df_si.sort_values(by='t_si').groupby('hadm_id').first().reset_index()
+else:
+    df_si = pd.DataFrame(columns=['subject_id', 'hadm_id', 't_culture', 't_abx', 't_si'])
 print(f"Found {len(df_si)} admissions with suspected infection.")
 
 df_merged = pd.merge(df_icustays, df_si, on=['subject_id', 'hadm_id'], how='inner')
@@ -103,8 +96,6 @@ df_valid_si = df_merged[
 ]
 stay_si_dict = dict(zip(df_valid_si['stay_id'], df_valid_si['t_si']))
 print(f"Stays with valid suspected infection window: {len(stay_si_dict)}")
-
-df_chartevents['charttime'] = pd.to_datetime(df_chartevents['charttime'])
 
 vitals_mapping = {
     220045: 'heart_rate',
@@ -120,9 +111,14 @@ gcs_itemids = [220739, 223900, 223901]
 resp_itemids = [223835, 220277]
 
 all_icu_items = list(vitals_mapping.keys()) + gcs_itemids + resp_itemids
-df_icu_data = df_chartevents[df_chartevents['itemid'].isin(all_icu_items)].copy()
 
-df_labevents['charttime'] = pd.to_datetime(df_labevents['charttime'])
+print("Loading and filtering chartevents.csv.gz...")
+chartevents_chunks = []
+for chunk in pd.read_csv(os.path.join(DATA_DIR, "icu", "chartevents.csv.gz"), usecols=['stay_id', 'subject_id', 'hadm_id', 'itemid', 'charttime', 'valuenum'], chunksize=1000000):
+    chunk_filtered = chunk[chunk['itemid'].isin(all_icu_items) & chunk['valuenum'].notna()]
+    chartevents_chunks.append(chunk_filtered)
+df_icu_data = pd.concat(chartevents_chunks)
+df_icu_data['charttime'] = pd.to_datetime(df_icu_data['charttime'])
 
 labs_mapping = {
     50931: 'glucose', 52027: 'glucose', 50809: 'glucose',
@@ -140,20 +136,85 @@ labs_mapping = {
     50813: 'lactate'
 }
 
-df_hosp_data = df_labevents[df_labevents['itemid'].isin(labs_mapping.keys())].copy()
+print("Loading and filtering labevents.csv.gz...")
+labevents_chunks = []
+for chunk in pd.read_csv(os.path.join(DATA_DIR, "hosp", "labevents.csv.gz"), usecols=['subject_id', 'hadm_id', 'itemid', 'charttime', 'valuenum'], chunksize=1000000):
+    chunk_filtered = chunk[chunk['itemid'].isin(labs_mapping.keys()) & chunk['valuenum'].notna()]
+    labevents_chunks.append(chunk_filtered)
+df_hosp_data = pd.concat(labevents_chunks)
+df_hosp_data['charttime'] = pd.to_datetime(df_hosp_data['charttime'])
 
 grid_rows = []
 
-for _, stay in df_icustays.iterrows():
+print("Preparing group maps for fast lookups...")
+pat_dict = df_patients.set_index('subject_id')[['gender', 'anchor_age']].to_dict('index')
+
+print("Preparing ICU data dict...")
+df_icu_sorted = df_icu_data.sort_values(['stay_id', 'itemid', 'charttime'])
+icu_dict = {}
+for (stay_id, itemid), sub_group in df_icu_sorted.groupby(['stay_id', 'itemid']):
+    if stay_id not in icu_dict:
+        icu_dict[stay_id] = {}
+    icu_dict[stay_id][itemid] = {
+        'times': sub_group['charttime'].values,
+        'vals': sub_group['valuenum'].values
+    }
+
+print("Preparing hospital labs dict...")
+df_hosp_sorted = df_hosp_data.sort_values(['subject_id', 'itemid', 'charttime'])
+hosp_dict = {}
+for (subject_id, itemid), sub_group in df_hosp_sorted.groupby(['subject_id', 'itemid']):
+    if subject_id not in hosp_dict:
+        hosp_dict[subject_id] = {}
+    hosp_dict[subject_id][itemid] = {
+        'times': sub_group['charttime'].values,
+        'vals': sub_group['valuenum'].values
+    }
+
+print("Preparing vasoactive dict...")
+vaso_dict = {}
+for stay_id, group in df_vaso.groupby('stay_id'):
+    vaso_dict[stay_id] = [
+        {
+            'start': r.starttime,
+            'end': r.endtime,
+            'itemid': r.itemid,
+            'rate': r.rate if not pd.isna(r.rate) else 0.0
+        }
+        for r in group.itertuples()
+    ]
+
+print("Preparing urine output dict...")
+uop_dict = {}
+for stay_id, group in df_uop.sort_values('charttime').groupby('stay_id'):
+    uop_dict[stay_id] = {
+        'times': group['charttime'].values,
+        'vals': group['value'].values
+    }
+
+vitals_defaults = {'heart_rate': 80.0, 'resp_rate': 15.0, 'spo2': 98.0, 'sbp': 120.0, 'dbp': 80.0, 'mbp': 80.0, 'temp': 98.6}
+vitals_cols_to_ids = {col: [k for k, v in vitals_mapping.items() if v == col] for col in vitals_mapping.values()}
+labs_defaults = {
+    'glucose': 100.0, 'potassium': 4.0, 'sodium': 140.0, 'creatinine': 0.8,
+    'chloride': 100.0, 'bun': 15.0, 'hematocrit': 40.0, 'bicarbonate': 24.0,
+    'platelets': 200.0, 'hemoglobin': 13.0, 'wbc': 7.0, 'bilirubin': 0.5, 'lactate': 1.0
+}
+labs_cols_to_ids = {col: [k for k, v in labs_mapping.items() if v == col] for col in set(labs_mapping.values())}
+
+print("Starting hourly grid construction...")
+for idx_stay, (_, stay) in enumerate(df_icustays.iterrows()):
+    if idx_stay % 5000 == 0:
+        print(f"Processed {idx_stay}/{len(df_icustays)} ICU stays...")
+        
     stay_id = stay['stay_id']
     subject_id = stay['subject_id']
     hadm_id = stay['hadm_id']
     
-    pat_row = df_patients[df_patients['subject_id'] == subject_id]
-    if pat_row.empty:
+    pat = pat_dict.get(subject_id, None)
+    if pat is None:
         continue
-    age = pat_row.iloc[0]['anchor_age']
-    gender = pat_row.iloc[0]['gender']
+    age = pat['anchor_age']
+    gender = pat['gender']
     
     intime = pd.to_datetime(stay['intime'])
     outtime = pd.to_datetime(stay['outtime'])
@@ -165,148 +226,182 @@ for _, stay in df_icustays.iterrows():
     if len(grid_times) < 6:
         continue
         
-    df_stay_icu = df_icu_data[df_icu_data['stay_id'] == stay_id].copy()
-    df_stay_hosp = df_hosp_data[
-        (df_hosp_data['subject_id'] == subject_id) &
-        (df_hosp_data['charttime'] >= intime - pd.Timedelta(hours=24)) &
-        (df_hosp_data['charttime'] <= outtime)
-    ].copy()
+    # Vitals processing
+    vitals_dict = {}
+    icu_stay_data = icu_dict.get(stay_id, {})
+    for col_name, itemids in vitals_cols_to_ids.items():
+        meas_list = []
+        for itemid in itemids:
+            meas = icu_stay_data.get(itemid, None)
+            if meas is not None:
+                meas_list.append(meas)
+        
+        if len(meas_list) > 0:
+            all_times = np.concatenate([m['times'] for m in meas_list])
+            all_vals = np.concatenate([m['vals'] for m in meas_list])
+            sort_idx = np.argsort(all_times)
+            var_times = all_times[sort_idx]
+            var_vals = all_vals[sort_idx]
+            
+            vals_grid = np.full(len(grid_times), np.nan)
+            var_idx = 0
+            current_val = np.nan
+            for i, t in enumerate(grid_times):
+                while var_idx < len(var_times) and var_times[var_idx] <= t:
+                    current_val = var_vals[var_idx]
+                    var_idx += 1
+                vals_grid[i] = current_val
+            vitals_dict[col_name] = vals_grid
+        else:
+            vitals_dict[col_name] = np.full(len(grid_times), np.nan)
+            
+    vitals_dict['sbp'] = np.where(~np.isnan(vitals_dict['sbp_art']), vitals_dict['sbp_art'], vitals_dict['sbp_ni'])
+    vitals_dict['dbp'] = np.where(~np.isnan(vitals_dict['dbp_art']), vitals_dict['dbp_art'], vitals_dict['dbp_ni'])
+    vitals_dict['mbp'] = np.where(~np.isnan(vitals_dict['mbp_art']), vitals_dict['mbp_art'], vitals_dict['mbp_ni'])
     
-    vitals_dict = {col: np.full(len(grid_times), np.nan) for col in vitals_mapping.values()}
-    vitals_dict['sbp'] = np.full(len(grid_times), np.nan)
-    vitals_dict['dbp'] = np.full(len(grid_times), np.nan)
-    vitals_dict['mbp'] = np.full(len(grid_times), np.nan)
-    vitals_dict['temp'] = np.full(len(grid_times), np.nan)
+    temp_c = vitals_dict['temp_c']
+    temp_f = vitals_dict['temp_f']
+    temp_combined = np.full(len(grid_times), np.nan)
+    for i in range(len(grid_times)):
+        tc = temp_c[i]
+        tf = temp_f[i]
+        if not np.isnan(tc):
+            temp_combined[i] = tc * 1.8 + 32.0
+        elif not np.isnan(tf):
+            temp_combined[i] = tf
+    vitals_dict['temp'] = temp_combined
     
-    if not df_stay_icu.empty:
-        df_vits_only = df_stay_icu[df_stay_icu['itemid'].isin(vitals_mapping.keys())].sort_values('charttime')
-        for col_name in vitals_mapping.values():
-            ids = [k for k, v in vitals_mapping.items() if v == col_name]
-            df_var = df_vits_only[df_vits_only['itemid'].isin(ids)]
-            if not df_var.empty:
-                var_times = df_var['charttime'].values
-                var_vals = df_var['valuenum'].values
-                var_idx = 0
-                current_val = np.nan
-                for i, t in enumerate(grid_times):
-                    while var_idx < len(df_var) and var_times[var_idx] <= t:
-                        current_val = var_vals[var_idx]
-                        var_idx += 1
-                    vitals_dict[col_name][i] = current_val
-                    
-        for i in range(len(grid_times)):
-            sbp_ni = vitals_dict['sbp_ni'][i]
-            sbp_art = vitals_dict['sbp_art'][i]
-            vitals_dict['sbp'][i] = sbp_art if not pd.isna(sbp_art) else sbp_ni
-            
-            dbp_ni = vitals_dict['dbp_ni'][i]
-            dbp_art = vitals_dict['dbp_art'][i]
-            vitals_dict['dbp'][i] = dbp_art if not pd.isna(dbp_art) else dbp_ni
-            
-            mbp_ni = vitals_dict['mbp_ni'][i]
-            mbp_art = vitals_dict['mbp_art'][i]
-            vitals_dict['mbp'][i] = mbp_art if not pd.isna(mbp_art) else mbp_ni
-            
-            temp_f = vitals_dict['temp_f'][i]
-            temp_c = vitals_dict['temp_c'][i]
-            if not pd.isna(temp_c):
-                vitals_dict['temp'][i] = temp_c * 1.8 + 32.0
-            elif not pd.isna(temp_f):
-                vitals_dict['temp'][i] = temp_f
-                
-    vitals_defaults = {'heart_rate': 80.0, 'resp_rate': 15.0, 'spo2': 98.0, 'sbp': 120.0, 'dbp': 80.0, 'mbp': 80.0, 'temp': 98.6}
     for col in ['heart_rate', 'resp_rate', 'spo2', 'sbp', 'dbp', 'mbp', 'temp']:
         s = pd.Series(vitals_dict[col]).ffill().bfill().fillna(vitals_defaults[col])
         vitals_dict[col] = s.values
         
-    labs_dict = {col: np.full(len(grid_times), np.nan) for col in set(labs_mapping.values())}
-    if not df_stay_hosp.empty:
-        df_labs_only = df_stay_hosp.sort_values('charttime')
-        for col_name in set(labs_mapping.values()):
-            ids = [k for k, v in labs_mapping.items() if v == col_name]
-            df_var = df_labs_only[df_labs_only['itemid'].isin(ids)]
-            if not df_var.empty:
-                var_times = df_var['charttime'].values
-                var_vals = df_var['valuenum'].values
-                var_idx = 0
-                current_val = np.nan
-                for i, t in enumerate(grid_times):
-                    while var_idx < len(df_var) and var_times[var_idx] <= t:
-                        current_val = var_vals[var_idx]
-                        var_idx += 1
-                    labs_dict[col_name][i] = current_val
-                    
-    labs_defaults = {
-        'glucose': 100.0, 'potassium': 4.0, 'sodium': 140.0, 'creatinine': 0.8,
-        'chloride': 100.0, 'bun': 15.0, 'hematocrit': 40.0, 'bicarbonate': 24.0,
-        'platelets': 200.0, 'hemoglobin': 13.0, 'wbc': 7.0, 'bilirubin': 0.5, 'lactate': 1.0
-    }
+    # Labs processing
+    labs_dict = {}
+    hosp_subj_data = hosp_dict.get(subject_id, {})
+    for col_name, itemids in labs_cols_to_ids.items():
+        meas_list = []
+        for itemid in itemids:
+            meas = hosp_subj_data.get(itemid, None)
+            if meas is not None:
+                mask = (meas['times'] >= intime - pd.Timedelta(hours=24)) & (meas['times'] <= outtime)
+                if np.any(mask):
+                    meas_list.append({
+                        'times': meas['times'][mask],
+                        'vals': meas['vals'][mask]
+                    })
+        
+        if len(meas_list) > 0:
+            all_times = np.concatenate([m['times'] for m in meas_list])
+            all_vals = np.concatenate([m['vals'] for m in meas_list])
+            sort_idx = np.argsort(all_times)
+            var_times = all_times[sort_idx]
+            var_vals = all_vals[sort_idx]
+            
+            vals_grid = np.full(len(grid_times), np.nan)
+            var_idx = 0
+            current_val = np.nan
+            for i, t in enumerate(grid_times):
+                while var_idx < len(var_times) and var_times[var_idx] <= t:
+                    current_val = var_vals[var_idx]
+                    var_idx += 1
+                vals_grid[i] = current_val
+            labs_dict[col_name] = vals_grid
+        else:
+            labs_dict[col_name] = np.full(len(grid_times), np.nan)
+            
     for col in labs_defaults.keys():
         s = pd.Series(labs_dict[col]).ffill().bfill().fillna(labs_defaults[col])
         labs_dict[col] = s.values
-
-    df_pao2 = df_stay_hosp[df_stay_hosp['itemid'] == 50821].copy()
-    df_resp_icu = df_stay_icu[df_stay_icu['itemid'].isin([220277, 223835])].copy()
-    df_resp = pd.concat([df_pao2[['charttime', 'itemid', 'valuenum']], df_resp_icu[['charttime', 'itemid', 'valuenum']]])
-    
-    sofa_resp = np.zeros(len(grid_times))
-    if not df_resp.empty:
-        df_resp = df_resp.sort_values('charttime')
-        df_pivot_resp = df_resp.pivot_table(index='charttime', columns='itemid', values='valuenum', aggfunc='last').reset_index()
-        if 223835 in df_pivot_resp.columns:
-            df_pivot_resp[223835] = df_pivot_resp[223835].apply(lambda x: x / 100.0 if x > 1.0 else x)
-            df_pivot_resp[223835] = df_pivot_resp[223835].clip(0.21, 1.0)
-        else:
-            df_pivot_resp[223835] = np.nan
-        df_pivot_resp = df_pivot_resp.ffill().fillna({223835: 0.21})
-        if 220277 not in df_pivot_resp.columns:
-            df_pivot_resp[220277] = np.nan
-        df_pivot_resp[220277] = df_pivot_resp[220277].fillna(98.0)
-        if 50821 not in df_pivot_resp.columns:
-            df_pivot_resp[50821] = np.nan
-        resp_times = df_pivot_resp['charttime'].values
-        resp_idx = 0
-        current_pao2 = np.nan
-        current_spo2 = 98.0
-        current_fio2 = 0.21
-        for i, t in enumerate(grid_times):
-            while resp_idx < len(df_pivot_resp) and resp_times[resp_idx] <= t:
-                row_resp = df_pivot_resp.iloc[resp_idx]
-                current_pao2 = row_resp[50821] if 50821 in row_resp else np.nan
-                current_spo2 = row_resp[220277] if 220277 in row_resp else 98.0
-                current_fio2 = row_resp[223835] if 223835 in row_resp else 0.21
-                resp_idx += 1
-            pf_ratio = current_pao2 / current_fio2 if not pd.isna(current_pao2) else np.nan
-            sf_ratio = current_spo2 / current_fio2
-            if not pd.isna(pf_ratio):
-                if pf_ratio < 100:
-                    sofa_resp[i] = 4
-                elif pf_ratio < 200:
-                    sofa_resp[i] = 3
-                elif pf_ratio < 300:
-                    sofa_resp[i] = 2
-                elif pf_ratio < 400:
-                    sofa_resp[i] = 1
-            else:
-                if sf_ratio < 150:
-                    sofa_resp[i] = 4
-                elif sf_ratio < 235:
-                    sofa_resp[i] = 3
-                elif sf_ratio < 315:
-                    sofa_resp[i] = 2
-                elif sf_ratio < 400:
-                    sofa_resp[i] = 1
         
-    df_plat = df_stay_hosp[df_stay_hosp['itemid'].isin([51265, 51704])].copy()
+    # SOFA Respiration
+    sofa_resp = np.zeros(len(grid_times))
+    pao2_meas = hosp_subj_data.get(50821, None)
+    pao2_vals = np.full(len(grid_times), np.nan)
+    if pao2_meas is not None:
+        mask = (pao2_meas['times'] >= intime - pd.Timedelta(hours=24)) & (pao2_meas['times'] <= outtime)
+        if np.any(mask):
+            var_times = pao2_meas['times'][mask]
+            var_vals = pao2_meas['vals'][mask]
+            var_idx = 0
+            current_val = np.nan
+            for i, t in enumerate(grid_times):
+                while var_idx < len(var_times) and var_times[var_idx] <= t:
+                    current_val = var_vals[var_idx]
+                    var_idx += 1
+                pao2_vals[i] = current_val
+                
+    spo2_meas = icu_stay_data.get(220277, None)
+    spo2_vals = np.full(len(grid_times), 98.0)
+    if spo2_meas is not None:
+        var_times = spo2_meas['times']
+        var_vals = spo2_meas['vals']
+        var_idx = 0
+        current_val = 98.0
+        for i, t in enumerate(grid_times):
+            while var_idx < len(var_times) and var_times[var_idx] <= t:
+                current_val = var_vals[var_idx]
+                var_idx += 1
+            spo2_vals[i] = current_val
+            
+    fio2_meas = icu_stay_data.get(223835, None)
+    fio2_vals = np.full(len(grid_times), 0.21)
+    if fio2_meas is not None:
+        var_times = fio2_meas['times']
+        var_vals = fio2_meas['vals']
+        var_idx = 0
+        current_val = 0.21
+        for i, t in enumerate(grid_times):
+            while var_idx < len(var_times) and var_times[var_idx] <= t:
+                val = var_vals[var_idx]
+                if val > 1.0:
+                    val = val / 100.0
+                current_val = max(0.21, min(1.0, val))
+                var_idx += 1
+            fio2_vals[i] = current_val
+            
+    for i in range(len(grid_times)):
+        current_pao2 = pao2_vals[i]
+        current_spo2 = spo2_vals[i]
+        current_fio2 = fio2_vals[i]
+        pf_ratio = current_pao2 / current_fio2 if not np.isnan(current_pao2) else np.nan
+        sf_ratio = current_spo2 / current_fio2
+        if not np.isnan(pf_ratio):
+            if pf_ratio < 100:
+                sofa_resp[i] = 4
+            elif pf_ratio < 200:
+                sofa_resp[i] = 3
+            elif pf_ratio < 300:
+                sofa_resp[i] = 2
+            elif pf_ratio < 400:
+                sofa_resp[i] = 1
+        else:
+            if sf_ratio < 150:
+                sofa_resp[i] = 4
+            elif sf_ratio < 235:
+                sofa_resp[i] = 3
+            elif sf_ratio < 315:
+                sofa_resp[i] = 2
+            elif sf_ratio < 400:
+                sofa_resp[i] = 1
+                
+    # SOFA Coagulation
     sofa_coag = np.zeros(len(grid_times))
-    if not df_plat.empty:
-        df_plat = df_plat.sort_values('charttime')
-        plat_times = df_plat['charttime'].values
-        plat_vals = df_plat['valuenum'].values
+    plat_meas_list = []
+    for itemid in [51265, 51704]:
+        meas = hosp_subj_data.get(itemid, None)
+        if meas is not None:
+            plat_meas_list.append(meas)
+    if len(plat_meas_list) > 0:
+        all_times = np.concatenate([m['times'] for m in plat_meas_list])
+        all_vals = np.concatenate([m['vals'] for m in plat_meas_list])
+        sort_idx = np.argsort(all_times)
+        plat_times = all_times[sort_idx]
+        plat_vals = all_vals[sort_idx]
+        
         plat_idx = 0
         current_plat = 200.0
         for i, t in enumerate(grid_times):
-            while plat_idx < len(df_plat) and plat_times[plat_idx] <= t:
+            while plat_idx < len(plat_times) and plat_times[plat_idx] <= t:
                 current_plat = plat_vals[plat_idx]
                 plat_idx += 1
             if current_plat < 20:
@@ -317,17 +412,17 @@ for _, stay in df_icustays.iterrows():
                 sofa_coag[i] = 2
             elif current_plat < 150:
                 sofa_coag[i] = 1
-        
-    df_bili = df_stay_hosp[df_stay_hosp['itemid'] == 50885].copy()
+                
+    # SOFA Liver
     sofa_liver = np.zeros(len(grid_times))
-    if not df_bili.empty:
-        df_bili = df_bili.sort_values('charttime')
-        bili_times = df_bili['charttime'].values
-        bili_vals = df_bili['valuenum'].values
+    bili_meas = hosp_subj_data.get(50885, None)
+    if bili_meas is not None:
+        bili_times = bili_meas['times']
+        bili_vals = bili_meas['vals']
         bili_idx = 0
         current_bili = 0.5
         for i, t in enumerate(grid_times):
-            while bili_idx < len(df_bili) and bili_times[bili_idx] <= t:
+            while bili_idx < len(bili_times) and bili_times[bili_idx] <= t:
                 current_bili = bili_vals[bili_idx]
                 bili_idx += 1
             if current_bili >= 12.0:
@@ -338,34 +433,39 @@ for _, stay in df_icustays.iterrows():
                 sofa_liver[i] = 2
             elif current_bili >= 1.2:
                 sofa_liver[i] = 1
-        
-    df_map = df_stay_icu[df_stay_icu['itemid'].isin([220052, 220181])].copy()
-    df_stay_vaso = df_vaso[df_vaso['stay_id'] == stay_id].copy()
+                
+    # SOFA Cardiovascular
     sofa_cardio = np.zeros(len(grid_times))
-    vaso_active = []
-    if not df_stay_vaso.empty:
-        for _, row in df_stay_vaso.iterrows():
-            vaso_active.append({
-                'start': row['starttime'],
-                'end': row['endtime'],
-                'itemid': row['itemid'],
-                'rate': row['rate'] if not pd.isna(row['rate']) else 0.0
-            })
+    map_meas_list = []
+    for itemid in [220052, 220181]:
+        meas = icu_stay_data.get(itemid, None)
+        if meas is not None:
+            map_meas_list.append(meas)
+            
+    map_times = np.array([])
+    map_vals = np.array([])
+    if len(map_meas_list) > 0:
+        all_times = np.concatenate([m['times'] for m in map_meas_list])
+        all_vals = np.concatenate([m['vals'] for m in map_meas_list])
+        sort_idx = np.argsort(all_times)
+        map_times = all_times[sort_idx]
+        map_vals = all_vals[sort_idx]
+        
+    active_vasos = vaso_dict.get(stay_id, [])
     map_idx = 0
     current_map = 80.0
-    if not df_map.empty:
-        df_map = df_map.sort_values('charttime')
     for i, t in enumerate(grid_times):
-        if not df_map.empty:
-            while map_idx < len(df_map) and df_map.iloc[map_idx]['charttime'] <= t:
-                val = df_map.iloc[map_idx]['valuenum']
-                if not pd.isna(val) and 30 < val < 200:
+        if len(map_times) > 0:
+            while map_idx < len(map_times) and map_times[map_idx] <= t:
+                val = map_vals[map_idx]
+                if not np.isnan(val) and 30 < val < 200:
                     current_map = val
                 map_idx += 1
-        active_vasos = [v for v in vaso_active if v['start'] <= t <= v['end']]
-        if len(active_vasos) > 0:
+                
+        t_active_vasos = [v for v in active_vasos if v['start'] <= t <= v['end']]
+        if len(t_active_vasos) > 0:
             max_score = 2
-            for vaso in active_vasos:
+            for vaso in t_active_vasos:
                 itemid = vaso['itemid']
                 rate = vaso['rate']
                 if itemid == 221662:
@@ -388,41 +488,76 @@ for _, stay in df_icustays.iterrows():
         else:
             if current_map < 70.0:
                 sofa_cardio[i] = 1
-        
-    df_gcs = df_stay_icu[df_stay_icu['itemid'].isin(gcs_itemids)].copy()
+                
+    # SOFA CNS
     sofa_cns = np.zeros(len(grid_times))
-    if not df_gcs.empty:
-        df_gcs = df_gcs.sort_values('charttime')
-        df_gcs_pivot = df_gcs.pivot_table(index='charttime', columns='itemid', values='valuenum', aggfunc='last').reset_index()
-        df_gcs_pivot = df_gcs_pivot.ffill().fillna({220739: 4, 223900: 5, 223901: 6})
-        df_gcs_pivot['gcs'] = df_gcs_pivot[220739] + df_gcs_pivot[223900] + df_gcs_pivot[223901]
-        gcs_times = df_gcs_pivot['charttime'].values
-        gcs_vals = df_gcs_pivot['gcs'].values
-        gcs_idx = 0
-        current_gcs = 15.0
+    gcs_eye = np.full(len(grid_times), 4.0)
+    gcs_verbal = np.full(len(grid_times), 5.0)
+    gcs_motor = np.full(len(grid_times), 6.0)
+    
+    eye_meas = icu_stay_data.get(220739, None)
+    if eye_meas is not None:
+        times, vals = eye_meas['times'], eye_meas['vals']
+        idx = 0
+        cur = 4.0
         for i, t in enumerate(grid_times):
-            while gcs_idx < len(df_gcs_pivot) and gcs_times[gcs_idx] <= t:
-                current_gcs = gcs_vals[gcs_idx]
-                gcs_idx += 1
-            if current_gcs < 6:
-                sofa_cns[i] = 4
-            elif current_gcs < 10:
-                sofa_cns[i] = 3
-            elif current_gcs < 13:
-                sofa_cns[i] = 2
-            elif current_gcs < 15:
-                sofa_cns[i] = 1
-        
-    df_creat = df_stay_hosp[df_stay_hosp['itemid'].isin([50912, 52024])].copy()
-    df_stay_uop = df_uop[df_uop['stay_id'] == stay_id].copy()
+            while idx < len(times) and times[idx] <= t:
+                cur = vals[idx]
+                idx += 1
+            gcs_eye[i] = cur
+            
+    verbal_meas = icu_stay_data.get(223900, None)
+    if verbal_meas is not None:
+        times, vals = verbal_meas['times'], verbal_meas['vals']
+        idx = 0
+        cur = 5.0
+        for i, t in enumerate(grid_times):
+            while idx < len(times) and times[idx] <= t:
+                cur = vals[idx]
+                idx += 1
+            gcs_verbal[i] = cur
+            
+    motor_meas = icu_stay_data.get(223901, None)
+    if motor_meas is not None:
+        times, vals = motor_meas['times'], motor_meas['vals']
+        idx = 0
+        cur = 6.0
+        for i, t in enumerate(grid_times):
+            while idx < len(times) and times[idx] <= t:
+                cur = vals[idx]
+                idx += 1
+            gcs_motor[i] = cur
+            
+    for i in range(len(grid_times)):
+        current_gcs = gcs_eye[i] + gcs_verbal[i] + gcs_motor[i]
+        if current_gcs < 6:
+            sofa_cns[i] = 4
+        elif current_gcs < 10:
+            sofa_cns[i] = 3
+        elif current_gcs < 13:
+            sofa_cns[i] = 2
+        elif current_gcs < 15:
+            sofa_cns[i] = 1
+            
+    # SOFA Renal
     creat_scores = np.zeros(len(grid_times))
-    if not df_creat.empty:
-        df_creat = df_creat.sort_values('charttime')
+    creat_meas_list = []
+    for itemid in [50912, 52024]:
+        meas = hosp_subj_data.get(itemid, None)
+        if meas is not None:
+            creat_meas_list.append(meas)
+    if len(creat_meas_list) > 0:
+        all_times = np.concatenate([m['times'] for m in creat_meas_list])
+        all_vals = np.concatenate([m['vals'] for m in creat_meas_list])
+        sort_idx = np.argsort(all_times)
+        creat_times = all_times[sort_idx]
+        creat_vals = all_vals[sort_idx]
+        
         creat_idx = 0
         current_creat = 0.8
         for i, t in enumerate(grid_times):
-            while creat_idx < len(df_creat) and df_creat.iloc[creat_idx]['charttime'] <= t:
-                current_creat = df_creat.iloc[creat_idx]['valuenum']
+            while creat_idx < len(creat_times) and creat_times[creat_idx] <= t:
+                current_creat = creat_vals[creat_idx]
                 creat_idx += 1
             if current_creat >= 5.0:
                 creat_scores[i] = 4
@@ -432,11 +567,12 @@ for _, stay in df_icustays.iterrows():
                 creat_scores[i] = 2
             elif current_creat >= 1.2:
                 creat_scores[i] = 1
+                
     uop_scores = np.zeros(len(grid_times))
-    if not df_stay_uop.empty:
-        df_stay_uop = df_stay_uop.sort_values('charttime')
-        uop_times = df_stay_uop['charttime'].values
-        uop_vals = df_stay_uop['value'].values
+    uop_meas = uop_dict.get(stay_id, None)
+    if uop_meas is not None:
+        uop_times = uop_meas['times']
+        uop_vals = uop_meas['vals']
         for i, t in enumerate(grid_times):
             t_start = t - pd.Timedelta(hours=24)
             valid_mask = (uop_times > t_start) & (uop_times <= t)
