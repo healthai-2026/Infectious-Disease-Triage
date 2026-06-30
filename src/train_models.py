@@ -15,8 +15,8 @@ from sklearn.metrics import (
 from xgboost import XGBClassifier
 
 # Configurations
-DATA_PATH = "/Users/deepanshusinghshekhawat/Downloads/Sepsis/sepsis_features.csv"
-OUTPUT_DIR = "/Users/deepanshusinghshekhawat/Downloads/Sepsis"
+DATA_PATH = r"D:\Internship2026\Infectious-Disease-Triage\Data\processed\sepsis_features.csv"
+OUTPUT_DIR = r"D:\Internship2026\Infectious-Disease-Triage\reports"
 
 def clean_race(race):
     if not isinstance(race, str):

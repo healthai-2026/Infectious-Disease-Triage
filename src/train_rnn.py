@@ -23,9 +23,9 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
 # Configurations
-NPZ_PATH = "/Users/deepanshusinghshekhawat/Downloads/Sepsis/sepsis_sequential.npz"
-CSV_PATH = "/Users/deepanshusinghshekhawat/Downloads/Sepsis/sepsis_features.csv"
-OUTPUT_DIR = "/Users/deepanshusinghshekhawat/Downloads/Sepsis"
+NPZ_PATH = r"D:\Internship2026\Infectious-Disease-Triage\Data\processed\sepsis_sequential.npz"
+CSV_PATH = r"D:\Internship2026\Infectious-Disease-Triage\Data\processed\sepsis_features.csv"
+OUTPUT_DIR = r"D:\Internship2026\Infectious-Disease-Triage\reports"
 
 # PyTorch LSTM Model Definition
 class SepsisLSTM(nn.Module):

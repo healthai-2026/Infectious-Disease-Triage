@@ -1,0 +1,40 @@
+=== SEPSIS MODEL PERFORMANCE EVALUATION ===
+Date: 2026-06-28 23:36:53
+
+Total Stays Analyzed: 94438
+Train Set Size: 75550 (Sepsis rate: 18.16%)
+Test Set Size: 18888 (Sepsis rate: 18.15%)
+
+--- RANDOM FOREST ---
+ROC-AUC: 0.82519
+PR-AUC (Average Precision): 0.52313
+Confusion Matrix:
+  TN: 11731  FP: 3728
+  FN: 947  TP: 2482
+
+Classification Report:
+              precision    recall  f1-score   support
+
+           0       0.93      0.76      0.83     15459
+           1       0.40      0.72      0.51      3429
+
+    accuracy                           0.75     18888
+   macro avg       0.66      0.74      0.67     18888
+weighted avg       0.83      0.75      0.78     18888
+
+--- XGBOOST ---
+ROC-AUC: 0.84530
+PR-AUC (Average Precision): 0.56286
+Confusion Matrix:
+  TN: 11703  FP: 3756
+  FN: 809  TP: 2620
+
+Classification Report:
+              precision    recall  f1-score   support
+
+           0       0.94      0.76      0.84     15459
+           1       0.41      0.76      0.53      3429
+
+    accuracy                           0.76     18888
+   macro avg       0.67      0.76      0.69     18888
+weighted avg       0.84      0.76      0.78     18888

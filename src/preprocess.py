@@ -150,26 +150,46 @@ print("Preparing group maps for fast lookups...")
 pat_dict = df_patients.set_index('subject_id')[['gender', 'anchor_age']].to_dict('index')
 
 print("Preparing ICU data dict...")
-df_icu_sorted = df_icu_data.sort_values(['stay_id', 'itemid', 'charttime'])
 icu_dict = {}
-for (stay_id, itemid), sub_group in df_icu_sorted.groupby(['stay_id', 'itemid']):
-    if stay_id not in icu_dict:
-        icu_dict[stay_id] = {}
-    icu_dict[stay_id][itemid] = {
-        'times': sub_group['charttime'].values,
-        'vals': sub_group['valuenum'].values
-    }
+for row in df_icu_data.itertuples(index=False):
+    sid = row.stay_id
+    iid = row.itemid
+    if sid not in icu_dict:
+        icu_dict[sid] = {}
+    if iid not in icu_dict[sid]:
+        icu_dict[sid][iid] = {'times': [], 'vals': []}
+    icu_dict[sid][iid]['times'].append(row.charttime)
+    icu_dict[sid][iid]['vals'].append(row.valuenum)
+    
+for sid in icu_dict:
+    for iid in icu_dict[sid]:
+        icu_dict[sid][iid]['times'] = np.array(icu_dict[sid][iid]['times'])
+        icu_dict[sid][iid]['vals'] = np.array(icu_dict[sid][iid]['vals'])
+
+# Free up memory
+del df_icu_data
+import gc; gc.collect()
 
 print("Preparing hospital labs dict...")
-df_hosp_sorted = df_hosp_data.sort_values(['subject_id', 'itemid', 'charttime'])
 hosp_dict = {}
-for (subject_id, itemid), sub_group in df_hosp_sorted.groupby(['subject_id', 'itemid']):
-    if subject_id not in hosp_dict:
-        hosp_dict[subject_id] = {}
-    hosp_dict[subject_id][itemid] = {
-        'times': sub_group['charttime'].values,
-        'vals': sub_group['valuenum'].values
-    }
+for row in df_hosp_data.itertuples(index=False):
+    sub = row.subject_id
+    iid = row.itemid
+    if sub not in hosp_dict:
+        hosp_dict[sub] = {}
+    if iid not in hosp_dict[sub]:
+        hosp_dict[sub][iid] = {'times': [], 'vals': []}
+    hosp_dict[sub][iid]['times'].append(row.charttime)
+    hosp_dict[sub][iid]['vals'].append(row.valuenum)
+
+for sub in hosp_dict:
+    for iid in hosp_dict[sub]:
+        hosp_dict[sub][iid]['times'] = np.array(hosp_dict[sub][iid]['times'])
+        hosp_dict[sub][iid]['vals'] = np.array(hosp_dict[sub][iid]['vals'])
+
+# Free up memory
+del df_hosp_data
+gc.collect()
 
 print("Preparing vasoactive dict...")
 vaso_dict = {}
@@ -721,6 +741,58 @@ print(f"Sepsis positive samples (label=1): {df_features['label'].sum()} ({df_fea
 df_features.to_csv(os.path.join(PROCESSED_DIR, "features.csv"), index=False)
 
 print("Preprocessing completed successfully!")
+print("Generating sepsis_sequential.npz for RNN training...")
+seq_features = ['heart_rate', 'sbp', 'dbp', 'mbp', 'resp_rate', 'temp', 'spo2', 'glucose', 'sodium', 'creatinine', 'wbc']
+try:
+    df_static = pd.read_csv(os.path.join(PROCESSED_DIR, "sepsis_features.csv"))
+    target_stays = df_static['stay_id'].values
+    y_static = df_static['sepsis'].values
+    
+    # Static features 
+    X_static_all = df_static.drop(columns=['stay_id', 'subject_id', 'hadm_id', 'sepsis'])
+    # Preprocess static features same as train_rnn.py for saving in npz
+    def clean_race_local(race):
+        if not isinstance(race, str): return 'UNKNOWN/OTHER'
+        race_upper = race.upper()
+        if 'WHITE' in race_upper or 'PORTUGUESE' in race_upper: return 'WHITE'
+        elif 'BLACK' in race_upper: return 'BLACK'
+        elif 'HISPANIC' in race_upper or 'LATINO' in race_upper or 'SOUTH AMERICAN' in race_upper: return 'HISPANIC'
+        elif 'ASIAN' in race_upper: return 'ASIAN'
+        return 'UNKNOWN/OTHER'
+    X_static_all['race'] = X_static_all['race'].apply(clean_race_local)
+    X_static_all = pd.get_dummies(X_static_all, columns=['gender', 'race', 'admission_type'], drop_first=True)
+    bool_cols = X_static_all.select_dtypes(include=['bool']).columns
+    X_static_all[bool_cols] = X_static_all[bool_cols].astype(int)
+    
+    count_cols = [c for c in X_static_all.columns if c.endswith('_count')]
+    X_static_all[count_cols] = X_static_all[count_cols].fillna(0)
+    
+    X_static_array = X_static_all.values
+    
+    N = len(target_stays)
+    X_seq_array = np.full((N, 24, len(seq_features)), np.nan, dtype=np.float32)
+    
+    # We already have df_grid grouped by stay_id
+    grouped_grid = df_grid.groupby('stay_id')
+    for i, sid in enumerate(target_stays):
+        if sid in grouped_grid.groups:
+            group = grouped_grid.get_group(sid).sort_values('time')
+            # Take first 24 hours
+            vals = group[seq_features].values[:24]
+            actual_len = min(24, len(vals))
+            X_seq_array[i, :actual_len, :] = vals
+            
+    np.savez_compressed(
+        os.path.join(PROCESSED_DIR, "sepsis_sequential.npz"),
+        X_seq=X_seq_array,
+        X_static=X_static_array,
+        y=y_static,
+        stay_ids=target_stays
+    )
+    print("Saved sepsis_sequential.npz successfully!")
+except Exception as e:
+    print("Could not generate sepsis_sequential.npz:", e)
+
 print(f"total_patients: {df_patients['subject_id'].nunique()}")
 print(f"total_stays: {df_icustays['stay_id'].nunique()}")
 print(f"stays_in_grid: {df_grid['stay_id'].nunique()}")

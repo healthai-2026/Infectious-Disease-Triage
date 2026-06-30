@@ -4,13 +4,13 @@ import os
 import time
 
 # Configurations
-MIMIC_PATH = "/Users/deepanshusinghshekhawat/Downloads/mimic-iv-3.1"
-OUTPUT_PATH = "/Users/deepanshusinghshekhawat/Downloads/Sepsis/sepsis_features.csv"
+MIMIC_PATH = r"D:\Internship2026\Infectious-Disease-Triage\Data\mimic-iv-3.1"
+OUTPUT_PATH = r"D:\Internship2026\Infectious-Disease-Triage\Data\processed\sepsis_features.csv"
 
 def main():
     start_time = time.time()
     print("Step 1: Identifying Sepsis admissions from ICD codes...")
-    diagnoses_path = os.path.join(MIMIC_PATH, "hosp/diagnoses_icd.csv")
+    diagnoses_path = os.path.join(MIMIC_PATH, "hosp/diagnoses_icd.csv.gz")
     diagnoses = pd.read_csv(diagnoses_path)
     
     # Strip and convert to string for robust matching
@@ -33,14 +33,14 @@ def main():
     print(f"Found {len(sepsis_hadms)} sepsis admissions in diagnoses_icd.csv.")
 
     print("\nStep 2: Loading ICU stays and merging demographics...")
-    icustays = pd.read_csv(os.path.join(MIMIC_PATH, "icu/icustays.csv"))
+    icustays = pd.read_csv(os.path.join(MIMIC_PATH, "icu/icustays.csv.gz"))
     print(f"Total ICU stays loaded: {len(icustays)}")
     
     # Parse in time
     icustays['intime'] = pd.to_datetime(icustays['intime'])
     
     # Get patients info
-    patients = pd.read_csv(os.path.join(MIMIC_PATH, "hosp/patients.csv"), 
+    patients = pd.read_csv(os.path.join(MIMIC_PATH, "hosp/patients.csv.gz"), 
                            usecols=['subject_id', 'gender', 'anchor_age', 'anchor_year'])
     
     df_stays = icustays.merge(patients, on='subject_id', how='left')
@@ -50,7 +50,7 @@ def main():
     df_stays.loc[df_stays['age'] < 0, 'age'] = df_stays.loc[df_stays['age'] < 0, 'anchor_age']
     
     # Load admissions for race and admission type
-    admissions = pd.read_csv(os.path.join(MIMIC_PATH, "hosp/admissions.csv"), 
+    admissions = pd.read_csv(os.path.join(MIMIC_PATH, "hosp/admissions.csv.gz"), 
                             usecols=['hadm_id', 'race', 'admission_type'])
     df_stays = df_stays.merge(admissions, on='hadm_id', how='left')
     
@@ -107,7 +107,7 @@ def main():
         'wbc': (0.1, 150.0)
     }
 
-    chartevents_path = os.path.join(MIMIC_PATH, "icu/chartevents.csv")
+    chartevents_path = os.path.join(MIMIC_PATH, "icu/chartevents.csv.gz")
     chunk_size = 2000000  # 2M rows chunks
     collected_data = []
     
