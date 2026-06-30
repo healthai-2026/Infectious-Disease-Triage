@@ -239,6 +239,9 @@ for idx_stay, (_, stay) in enumerate(df_icustays.iterrows()):
     intime = pd.to_datetime(stay['intime'])
     outtime = pd.to_datetime(stay['outtime'])
     
+    if pd.isna(intime) or pd.isna(outtime):
+        continue
+    
     start_hour = intime.replace(minute=0, second=0, microsecond=0)
     end_hour = outtime.replace(minute=0, second=0, microsecond=0) + pd.Timedelta(hours=1)
     grid_times = pd.date_range(start=start_hour, end=end_hour, freq='h')
