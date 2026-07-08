@@ -4,8 +4,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-DATA_DIR = r"D:\Internship2026\Infectious-Disease-Triage\Data\mimic-iv-3.1"
-PROCESSED_DIR = r"D:\Internship2026\Infectious-Disease-Triage\Data\processed"
+DATA_DIR = r"C:\PS1\Infectious-Disease-Triage\Data\mimic-iv-3.1"
+PROCESSED_DIR = r"C:\PS1\Infectious-Disease-Triage\Data\processed"
 os.makedirs(PROCESSED_DIR, exist_ok=True)
 
 print("Loading demographics and stays...")

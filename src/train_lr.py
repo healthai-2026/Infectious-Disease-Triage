@@ -13,34 +13,34 @@ from sklearn.metrics import (
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
+from sklearn.impute import SimpleImputer
 
-PROCESSED_DIR = r"D:\Internship2026\Infectious-Disease-Triage\Data\processed"
+PROCESSED_DIR = r"C:\PS1\Infectious-Disease-Triage\Data\processed"
 
-features_file = os.path.join(PROCESSED_DIR, "sepsis_features_final.csv")
+features_file = os.path.join(PROCESSED_DIR, "features.csv")
 if not os.path.exists(features_file):
-    raise FileNotFoundError(f"Features file not found at {features_file}. Please run dataclean.py first.")
+    raise FileNotFoundError(f"Features file not found at {features_file}. Please run preprocess.py first.")
     
 df = pd.read_csv(features_file)
 print(f"Loaded feature matrix: {df.shape}")
 
-print("Loading diagnoses to extract target sepsis labels...")
-DATA_DIR = r"D:\Internship2026\Infectious-Disease-Triage\Data\mimic-iv-3.1"
-diagnoses = pd.read_csv(os.path.join(DATA_DIR, "hosp", "diagnoses_icd.csv.gz"), usecols=['hadm_id', 'icd_code'])
-d_icd = pd.read_csv(os.path.join(DATA_DIR, "hosp", "d_icd_diagnoses.csv.gz"), usecols=['icd_code', 'long_title'])
-sepsis_code_list = d_icd[d_icd['long_title'].str.contains('sepsis|septic', case=False, na=False)]['icd_code'].unique()
-sepsis_hadms = set(diagnoses[diagnoses['icd_code'].isin(sepsis_code_list)]['hadm_id'])
-df['label'] = df['hadm_id'].isin(sepsis_hadms).astype(int)
+# Use the pre-computed label from features.csv.
+df = df.dropna(subset=['label'])
+df['label'] = df['label'].astype(int)
 
+id_col = 'subject_id' if 'subject_id' in df.columns else 'stay_id' if 'stay_id' in df.columns else None
+if id_col is None:
+    raise KeyError("No usable patient/stay identifier column found in features.csv")
+
+exclude_cols = {'label', id_col, 'hadm_id', 'hours_since_admit', 'stay_id', 'time'}
 features = [
-    '220045_mean', '220181_mean', '220210_mean', '220277_mean', '223762_mean',
-    '220045_max', '220181_max', '220210_max', '220277_max', '223762_max',
-    '220045_min', '220181_min', '220210_min', '220277_min', '223762_min',
-    '220045_std', '220181_std', '220210_std', '220277_std', '223762_std',
-    'anchor_age', 'gender'
+    col for col in df.columns
+    if col not in exclude_cols and (col in {'age', 'gender'} or pd.api.types.is_numeric_dtype(df[col]))
 ]
+
 X = df[features]
 y = df['label']
-groups = df['subject_id']
+groups = df[id_col]
 
 print(f"Features selected for Logistic Regression training: {features}")
 print(f"Target distribution: {y.sum()} positive rows out of {len(y)} ({y.mean()*100:.2f}%)")
@@ -56,20 +56,27 @@ for fold, (train_idx, val_idx) in enumerate(gkf.split(X, y, groups=groups)):
     X_val, y_val = X.iloc[val_idx], y.iloc[val_idx]
     
     lr_fold = make_pipeline(
+        SimpleImputer(strategy='median'),
         StandardScaler(),
         LogisticRegression(class_weight='balanced', C=0.1, random_state=42, max_iter=1000)
     )
     lr_fold.fit(X_train, y_train)
     lr_oof_preds[val_idx] = lr_fold.predict_proba(X_val)[:, 1]
     
-lr_auroc = roc_auc_score(y, lr_oof_preds)
-lr_precision, lr_recall, _ = precision_recall_curve(y, lr_oof_preds)
-lr_auprc = auc(lr_recall, lr_precision)
+if np.unique(y).size > 1:
+    lr_auroc = roc_auc_score(y, lr_oof_preds)
+    lr_precision, lr_recall, _ = precision_recall_curve(y, lr_oof_preds)
+    lr_auprc = auc(lr_recall, lr_precision)
+else:
+    lr_auroc = float('nan')
+    lr_precision = np.array([0.0])
+    lr_recall = np.array([0.0])
+    lr_auprc = float('nan')
 
 best_lr_threshold = 0.5
 best_lr_f1 = 0
 for th in np.linspace(0.01, 0.99, 99):
-    f1 = f1_score(y, (lr_oof_preds >= th).astype(int))
+    f1 = f1_score(y, (lr_oof_preds >= th).astype(int), zero_division=0)
     if f1 > best_lr_f1:
         best_lr_f1 = f1
         best_lr_threshold = th
@@ -93,15 +100,20 @@ print("="*69)
 
 # Generate visualizations
 print("\nGenerating visualizations...")
-REPORTS_DIR = r"D:\Internship2026\Infectious-Disease-Triage\reports"
+REPORTS_DIR = r"C:\PS1\Infectious-Disease-Triage\reports"
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
 fig, axes = plt.subplots(2, 2, figsize=(14, 12))
 fig.suptitle('Logistic Regression — Sepsis Prediction Performance', fontsize=14, fontweight='bold', y=1.02)
 
 # ROC Curve
-lr_fpr, lr_tpr, _ = roc_curve(y, lr_oof_preds)
-axes[0, 0].plot(lr_fpr, lr_tpr, color='darkorange', label=f'LR (AUROC={lr_auroc:.4f})', linewidth=2)
+if np.unique(y).size > 1:
+    lr_fpr, lr_tpr, _ = roc_curve(y, lr_oof_preds)
+else:
+    lr_fpr, lr_tpr = np.array([]), np.array([])
+
+if len(lr_fpr) > 0:
+    axes[0, 0].plot(lr_fpr, lr_tpr, color='darkorange', label=f'LR (AUROC={lr_auroc:.4f})', linewidth=2)
 axes[0, 0].plot([0, 1], [0, 1], 'k--', label='Random', linewidth=1)
 axes[0, 0].set_xlabel('False Positive Rate', fontsize=11)
 axes[0, 0].set_ylabel('True Positive Rate', fontsize=11)
@@ -128,6 +140,7 @@ axes[1, 0].set_title('Confusion Matrix', fontsize=12, fontweight='bold')
 
 # Feature Importance via LR Coefficients (train a temp pipeline for this)
 temp_lr = make_pipeline(
+    SimpleImputer(strategy='median'),
     StandardScaler(),
     LogisticRegression(class_weight='balanced', C=0.1, random_state=42, max_iter=1000)
 )
@@ -149,6 +162,7 @@ plt.close()
 
 print("\nTraining final model on all data...")
 final_lr = make_pipeline(
+    SimpleImputer(strategy='median'),
     StandardScaler(),
     LogisticRegression(class_weight='balanced', C=0.1, random_state=42, max_iter=1000)
 )

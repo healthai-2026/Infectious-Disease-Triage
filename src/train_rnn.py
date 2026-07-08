@@ -7,7 +7,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.ensemble import RandomForestClassifier
@@ -23,9 +23,9 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
 # Configurations
-NPZ_PATH = r"D:\Internship2026\Infectious-Disease-Triage\Data\processed\sepsis_sequential.npz"
-CSV_PATH = r"D:\Internship2026\Infectious-Disease-Triage\Data\processed\sepsis_features.csv"
-OUTPUT_DIR = r"D:\Internship2026\Infectious-Disease-Triage\reports"
+NPZ_PATH = r"C:\PS1\Infectious-Disease-Triage\Data\processed\sepsis_sequential.npz"
+CSV_PATH = r"C:\PS1\Infectious-Disease-Triage\Data\processed\features.csv"
+OUTPUT_DIR = r"C:\PS1\Infectious-Disease-Triage\reports"
 
 # PyTorch LSTM Model Definition
 class SepsisLSTM(nn.Module):
@@ -82,22 +82,94 @@ def ffill_3d(X):
                     last_val = X_filled[i, t, f]
     return X_filled
 
+
+def build_fallback_sequences(csv_path):
+    print(f"{NPZ_PATH} not found; building fallback inputs from {csv_path}...")
+    df = pd.read_csv(csv_path)
+    df = df.dropna(subset=['label']).copy()
+
+    seq_candidates = [
+        'heart_rate_mean', 'sbp_mean', 'dbp_mean', 'mbp_mean', 'resp_rate_mean',
+        'temp_mean', 'spo2_mean', 'glucose_mean', 'sodium_mean', 'creatinine_mean', 'wbc_mean',
+        'heart_rate', 'sbp', 'dbp', 'mbp', 'resp_rate', 'temp', 'spo2', 'glucose', 'sodium', 'creatinine', 'wbc'
+    ]
+    selected_seq_cols = [col for col in seq_candidates if col in df.columns]
+
+    if not selected_seq_cols:
+        raise ValueError(f"No compatible sequence columns found in {csv_path}")
+
+    for col in selected_seq_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    df = df.sort_values(['stay_id', 'hours_since_admit'])
+    grouped = df.groupby('stay_id', sort=False)
+
+    stay_ids = []
+    labels = []
+    seq_rows = []
+    static_rows = []
+
+    for sid, group in grouped:
+        if group.empty:
+            continue
+
+        seq = group[selected_seq_cols].copy()
+        seq = seq.ffill().bfill()
+        seq = seq.iloc[:24, :].to_numpy(dtype=np.float32)
+
+        if seq.shape[0] < 24:
+            pad = np.repeat(seq[-1:].astype(np.float32), 24 - seq.shape[0], axis=0)
+            seq = np.vstack([seq, pad])
+
+        if seq.shape[1] < 11:
+            seq = np.pad(seq, ((0, 0), (0, 11 - seq.shape[1])), mode='constant')
+
+        stay_ids.append(int(sid))
+        labels.append(int(group['label'].iloc[0]))
+        seq_rows.append(seq[:24, :11])
+
+        age_val = group['age'].iloc[0] if 'age' in group.columns else 0.0
+        gender_val = group['gender'].iloc[0] if 'gender' in group.columns else 0.0
+        if isinstance(gender_val, str):
+            gender_val = 1.0 if gender_val.lower() in {'m', 'male', '1', 'true'} else 0.0
+        else:
+            gender_val = float(gender_val)
+
+        age_val = float(age_val) if pd.notna(age_val) else 0.0
+        static_rows.append(np.array([age_val, gender_val], dtype=np.float32))
+
+    X_seq = np.stack(seq_rows, axis=0)
+    X_static = np.stack(static_rows, axis=0)
+    y = np.array(labels, dtype=np.int64)
+    stay_ids = np.array(stay_ids, dtype=np.int64)
+
+    print(f"Built fallback sequential data shape: {X_seq.shape}")
+    print(f"Built fallback static data shape: {X_static.shape}")
+    return X_seq, X_static, y, stay_ids
+
+
 def main():
     start_time = time.time()
     
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     print("Step 1: Loading sequential dataset...")
-    data = np.load(NPZ_PATH)
-    X_seq = data['X_seq']
-    X_static = data['X_static']
-    y = data['y']
-    stay_ids = data['stay_ids']
+    if os.path.exists(NPZ_PATH):
+        data = np.load(NPZ_PATH)
+        X_seq = data['X_seq']
+        X_static = data['X_static']
+        y = data['y']
+        stay_ids = data['stay_ids']
+        print(f"Loaded sequential data shape: {X_seq.shape}")
+        print(f"Loaded static data shape: {X_static.shape}")
+    else:
+        X_seq, X_static, y, stay_ids = build_fallback_sequences(CSV_PATH)
+        print(f"Loaded fallback sequential data shape: {X_seq.shape}")
+        print(f"Loaded fallback static data shape: {X_static.shape}")
     
-    print(f"Loaded sequential data shape: {X_seq.shape}")
-    print(f"Loaded static data shape: {X_static.shape}")
-    
-    # 1. Stratified split for train/test sets (80% train, 20% test)
+    # 1. Patient-safe split for train/test sets (80% train, 20% test)
     indices = np.arange(len(y))
-    train_idx, test_idx = train_test_split(indices, test_size=0.2, random_state=42, stratify=y)
+    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+    train_idx, test_idx = next(gss.split(indices, y, groups=stay_ids))
     
     X_seq_train, X_seq_test = X_seq[train_idx], X_seq[test_idx]
     X_static_train, X_static_test = X_static[train_idx], X_static[test_idx]
@@ -203,23 +275,30 @@ def main():
     print(f"RNN ROC-AUC: {rnn_auc:.4f} | PR-AUC: {rnn_pr_auc:.4f}")
     
     rnn_cm = confusion_matrix(y_test, rnn_pred)
+    torch.save(
+        {'model_state_dict': model.state_dict(), 'input_dim': F_tr},
+        os.path.join(OUTPUT_DIR, 'rnn_model.pt')
+    )
+    print(f"Saved RNN model to {os.path.join(OUTPUT_DIR, 'rnn_model.pt')}")
     
     print("\nStep 4: Training and evaluating RF and XGBoost baselines on the same split...")
-    # Load static features dataset to train RF and XGBoost
+    # Load static features dataset to train RF and XGBoost on richer stay-level features
     df_static = pd.read_csv(CSV_PATH)
-    y_static = df_static['sepsis']
-    X_static_all = df_static.drop(columns=['stay_id', 'subject_id', 'hadm_id', 'sepsis'])
+    exclude_cols = {'stay_id', 'subject_id', 'hadm_id', 'time', 'label', 'hours_since_admit'}
+    stay_level_features = [
+        col for col in df_static.columns
+        if col not in exclude_cols and pd.api.types.is_numeric_dtype(df_static[col])
+    ]
+    df_stay_level = (
+        df_static.groupby('stay_id', as_index=False)
+        .agg({'label': 'max', 'age': 'first', 'gender': 'first', **{col: 'mean' for col in stay_level_features if col not in {'age', 'gender', 'label'}}})
+    )
+    df_stay_level = df_stay_level.set_index('stay_id').reindex(stay_ids).reset_index()
     
-    # Preprocess
-    X_static_all['race'] = X_static_all['race'].apply(clean_race)
-    X_static_all = pd.get_dummies(X_static_all, columns=['gender', 'race', 'admission_type'], drop_first=True)
-    bool_cols = X_static_all.select_dtypes(include=['bool']).columns
-    X_static_all[bool_cols] = X_static_all[bool_cols].astype(int)
-    
-    # Fill count columns with 0
-    count_cols = [c for c in X_static_all.columns if c.endswith('_count')]
-    other_cols = [c for c in X_static_all.columns if not c.endswith('_count')]
-    X_static_all[count_cols] = X_static_all[count_cols].fillna(0)
+    y_static = df_stay_level['label'].astype(int)
+    X_static_all = df_stay_level[[col for col in df_stay_level.columns if col not in {'stay_id', 'label'}]].copy()
+    X_static_all['gender'] = pd.to_numeric(X_static_all['gender'], errors='coerce').fillna(0).astype(int)
+    X_static_all['age'] = pd.to_numeric(X_static_all['age'], errors='coerce').fillna(X_static_all['age'].median())
     
     # Split using same indices
     X_s_train, X_s_test = X_static_all.iloc[train_idx].copy(), X_static_all.iloc[test_idx].copy()
@@ -231,11 +310,8 @@ def main():
     
     # Median Imputer
     static_imputer = SimpleImputer(strategy='median')
-    X_s_train_imp = X_s_train.copy()
-    X_s_test_imp = X_s_test.copy()
-    
-    X_s_train_imp[other_cols] = static_imputer.fit_transform(X_s_train[other_cols])
-    X_s_test_imp[other_cols] = static_imputer.transform(X_s_test[other_cols])
+    X_s_train_imp = pd.DataFrame(static_imputer.fit_transform(X_s_train), columns=X_s_train.columns, index=X_s_train.index)
+    X_s_test_imp = pd.DataFrame(static_imputer.transform(X_s_test), columns=X_s_test.columns, index=X_s_test.index)
     
     # 1. Random Forest
     rf = RandomForestClassifier(

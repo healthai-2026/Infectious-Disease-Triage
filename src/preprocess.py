@@ -3,8 +3,8 @@ import re
 import numpy as np
 import pandas as pd
 
-DATA_DIR = r"D:\Internship2026\Infectious-Disease-Triage\Data\mimic-iv-3.1"
-PROCESSED_DIR = r"D:\Internship2026\Infectious-Disease-Triage\Data\processed"
+DATA_DIR = r"C:\PS1\Infectious-Disease-Triage\Data\mimic-iv-3.1"
+PROCESSED_DIR = r"C:\PS1\Infectious-Disease-Triage\Data\processed"
 os.makedirs(PROCESSED_DIR, exist_ok=True)
 
 ABX_PATTERNS = [
@@ -656,11 +656,11 @@ for stay_id, df_stay in grouped_stays:
     sofa_vals = df_win['sofa_total'].values
     times = df_win['time'].values
     onset_time = None
+    baseline_sofa = sofa_vals[0] if len(sofa_vals) > 0 else np.nan
     for idx in range(len(df_win)):
         current_sofa = sofa_vals[idx]
         current_time = times[idx]
-        baseline_sofa = np.min(sofa_vals[:idx+1])
-        if current_sofa - baseline_sofa >= 2:
+        if not np.isnan(baseline_sofa) and current_sofa - baseline_sofa >= 2:
             onset_time = current_time
             break
     if onset_time is not None:
@@ -693,14 +693,7 @@ for stay_id, df_stay in grouped_stays:
             'time': current_time,
             'age': age,
             'gender': 1 if gender == 'M' else 0,
-            'hours_since_admit': idx,
-            'current_sofa': current_row['sofa_total'],
-            'sofa_resp': current_row['sofa_resp'],
-            'sofa_coag': current_row['sofa_coag'],
-            'sofa_liver': current_row['sofa_liver'],
-            'sofa_cardio': current_row['sofa_cardio'],
-            'sofa_cns': current_row['sofa_cns'],
-            'sofa_renal': current_row['sofa_renal']
+            'hours_since_admit': idx
         }
         
         for col in vitals_cols:
@@ -747,44 +740,35 @@ print("Preprocessing completed successfully!")
 print("Generating sepsis_sequential.npz for RNN training...")
 seq_features = ['heart_rate', 'sbp', 'dbp', 'mbp', 'resp_rate', 'temp', 'spo2', 'glucose', 'sodium', 'creatinine', 'wbc']
 try:
-    df_static = pd.read_csv(os.path.join(PROCESSED_DIR, "sepsis_features.csv"))
-    target_stays = df_static['stay_id'].values
-    y_static = df_static['sepsis'].values
-    
-    # Static features 
-    X_static_all = df_static.drop(columns=['stay_id', 'subject_id', 'hadm_id', 'sepsis'])
-    # Preprocess static features same as train_rnn.py for saving in npz
-    def clean_race_local(race):
-        if not isinstance(race, str): return 'UNKNOWN/OTHER'
-        race_upper = race.upper()
-        if 'WHITE' in race_upper or 'PORTUGUESE' in race_upper: return 'WHITE'
-        elif 'BLACK' in race_upper: return 'BLACK'
-        elif 'HISPANIC' in race_upper or 'LATINO' in race_upper or 'SOUTH AMERICAN' in race_upper: return 'HISPANIC'
-        elif 'ASIAN' in race_upper: return 'ASIAN'
-        return 'UNKNOWN/OTHER'
-    X_static_all['race'] = X_static_all['race'].apply(clean_race_local)
-    X_static_all = pd.get_dummies(X_static_all, columns=['gender', 'race', 'admission_type'], drop_first=True)
-    bool_cols = X_static_all.select_dtypes(include=['bool']).columns
-    X_static_all[bool_cols] = X_static_all[bool_cols].astype(int)
-    
-    count_cols = [c for c in X_static_all.columns if c.endswith('_count')]
-    X_static_all[count_cols] = X_static_all[count_cols].fillna(0)
-    
-    X_static_array = X_static_all.values
-    
+    df_static = pd.read_csv(os.path.join(PROCESSED_DIR, "features.csv"))
+    stay_level = (
+        df_static.groupby('stay_id', as_index=False)
+        .agg({
+            'label': 'max',
+            'age': 'first',
+            'gender': 'first'
+        })
+    )
+    stay_level = stay_level.sort_values('stay_id').reset_index(drop=True)
+    target_stays = stay_level['stay_id'].astype(int).values
+    y_static = stay_level['label'].astype(int).values
+
+    X_static_all = stay_level[['age', 'gender']].copy()
+    X_static_all['gender'] = pd.to_numeric(X_static_all['gender'], errors='coerce').fillna(0).astype(int)
+    X_static_all['age'] = pd.to_numeric(X_static_all['age'], errors='coerce').fillna(0)
+    X_static_array = X_static_all.values.astype(np.float32)
+
     N = len(target_stays)
     X_seq_array = np.full((N, 24, len(seq_features)), np.nan, dtype=np.float32)
-    
-    # We already have df_grid grouped by stay_id
+
     grouped_grid = df_grid.groupby('stay_id')
     for i, sid in enumerate(target_stays):
         if sid in grouped_grid.groups:
             group = grouped_grid.get_group(sid).sort_values('time')
-            # Take first 24 hours
             vals = group[seq_features].values[:24]
             actual_len = min(24, len(vals))
             X_seq_array[i, :actual_len, :] = vals
-            
+
     np.savez_compressed(
         os.path.join(PROCESSED_DIR, "sepsis_sequential.npz"),
         X_seq=X_seq_array,

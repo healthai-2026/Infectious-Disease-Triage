@@ -5,7 +5,7 @@ import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend for running headlessly
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.impute import SimpleImputer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
@@ -15,62 +15,37 @@ from sklearn.metrics import (
 from xgboost import XGBClassifier
 
 # Configurations
-DATA_PATH = r"D:\Internship2026\Infectious-Disease-Triage\Data\processed\sepsis_features.csv"
-OUTPUT_DIR = r"D:\Internship2026\Infectious-Disease-Triage\reports"
-
-def clean_race(race):
-    if not isinstance(race, str):
-        return 'UNKNOWN/OTHER'
-    race_upper = race.upper()
-    if 'WHITE' in race_upper or 'PORTUGUESE' in race_upper:
-        return 'WHITE'
-    elif 'BLACK' in race_upper:
-        return 'BLACK'
-    elif 'HISPANIC' in race_upper or 'LATINO' in race_upper or 'SOUTH AMERICAN' in race_upper:
-        return 'HISPANIC'
-    elif 'ASIAN' in race_upper:
-        return 'ASIAN'
-    else:
-        return 'UNKNOWN/OTHER'
+DATA_PATH = r"C:\PS1\Infectious-Disease-Triage\Data\processed\features.csv"
+OUTPUT_DIR = r"C:\PS1\Infectious-Disease-Triage\reports"
 
 def main():
     print("Step 1: Loading extracted sepsis features...")
     df = pd.read_csv(DATA_PATH)
     print(f"Loaded dataset with shape: {df.shape}")
     
-    # Target variable
-    y = df['sepsis']
+    # Drop rows where target is missing
+    df = df.dropna(subset=['label'])
     
-    # Feature variables (drop identifier columns)
-    X = df.drop(columns=['stay_id', 'subject_id', 'hadm_id', 'sepsis'])
+    # Target variable
+    y = df['label'].astype(int)
+    
+    # Feature variables (drop identifier/non-numeric columns and target)
+    drop_cols = [c for c in ['stay_id', 'subject_id', 'time', 'label', 'hadm_id', 'hours_since_admit'] if c in df.columns]
+    X = df.drop(columns=drop_cols)
     
     print("\nStep 2: Preprocessing categorical variables...")
-    # Simplify race
-    X['race'] = X['race'].apply(clean_race)
-    print("Race distribution after cleaning:")
-    print(X['race'].value_counts())
+    # Gender is already numeric (0/1). Let's make sure it is integer.
+    if 'gender' in X.columns:
+        X['gender'] = X['gender'].fillna(0).astype(int)
     
-    # One-hot encoding
-    categorical_cols = ['gender', 'race', 'admission_type']
-    X = pd.get_dummies(X, columns=categorical_cols, drop_first=True)
+    print(f"Total features: {X.shape[1]}")
     
-    # Explicitly convert bool columns from get_dummies to int (0/1) for models like XGBoost
-    bool_cols = X.select_dtypes(include=['bool']).columns
-    X[bool_cols] = X[bool_cols].astype(int)
-
-    # Separate count and value columns
-    # We should fill missing count columns with 0, since no measurement implies count = 0
-    count_cols = [c for c in X.columns if c.endswith('_count')]
-    other_cols = [c for c in X.columns if not c.endswith('_count')]
-    
-    X[count_cols] = X[count_cols].fillna(0)
-    
-    print(f"Total features after encoding and processing counts: {X.shape[1]}")
-    
-    print("\nStep 3: Splitting into stratified Train (80%) and Test (20%) sets...")
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
+    print("\nStep 3: Splitting into patient-safe Train (80%) and Test (20%) sets...")
+    group_col = 'subject_id' if 'subject_id' in df.columns else 'stay_id'
+    gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+    train_idx, test_idx = next(gss.split(X, y, groups=df[group_col]))
+    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
     print(f"Train set size: {X_train.shape[0]} (Sepsis rate: {y_train.mean()*100:.2f}%)")
     print(f"Test set size: {X_test.shape[0]} (Sepsis rate: {y_test.mean()*100:.2f}%)")
     
@@ -78,11 +53,8 @@ def main():
     # Median imputer fitted only on Train set and applied to both Train and Test
     imputer = SimpleImputer(strategy='median')
     
-    X_train_imputed = X_train.copy()
-    X_test_imputed = X_test.copy()
-    
-    X_train_imputed[other_cols] = imputer.fit_transform(X_train[other_cols])
-    X_test_imputed[other_cols] = imputer.transform(X_test[other_cols])
+    X_train_imputed = pd.DataFrame(imputer.fit_transform(X_train), columns=X_train.columns, index=X_train.index)
+    X_test_imputed = pd.DataFrame(imputer.transform(X_test), columns=X_test.columns, index=X_test.index)
     
     # Verify no missing values remain
     assert X_train_imputed.isnull().sum().sum() == 0, "Missing values remain in train set!"

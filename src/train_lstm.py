@@ -13,6 +13,7 @@ Each ICU stay becomes a (T x 7) time-series (T hourly steps, 7 features).
 Sliding windows of length SEQ_LEN are fed to a 2-layer LSTM.
 """
 
+import argparse
 import os
 import numpy as np
 import pandas as pd
@@ -33,164 +34,120 @@ from sklearn.metrics import (
 # ---------------------------------------------------------------------------- #
 #  Paths & Config                                                               #
 # ---------------------------------------------------------------------------- #
-DATA_DIR      = r"D:\Internship2026\Infectious-Disease-Triage\Data\mimic-iv-3.1"
-PROCESSED_DIR = r"D:\Internship2026\Infectious-Disease-Triage\Data\processed"
-REPORTS_DIR   = r"D:\Internship2026\Infectious-Disease-Triage\reports"
+parser = argparse.ArgumentParser(description="Train a lightweight LSTM sepsis predictor")
+parser.add_argument("--epochs", type=int, default=5, help="Number of training epochs per fold")
+parser.add_argument("--n-folds", type=int, default=2, help="Number of GroupKFold folds")
+parser.add_argument("--batch-size", type=int, default=128, help="Training batch size")
+parser.add_argument("--seq-len", type=int, default=12, help="Hours per input window")
+parser.add_argument("--max-hours", type=int, default=24, help="How far into each stay to look")
+parser.add_argument("--window-stride", type=int, default=3, help="Stride between sliding windows")
+parser.add_argument("--max-sequences", type=int, default=None, help="Optional cap on generated training sequences; omit to use all windows")
+parser.add_argument("--plot", action="store_true", help="Generate performance plots")
+args = parser.parse_args()
+
+DATA_DIR      = r"C:\PS1\Infectious-Disease-Triage\Data\mimic-iv-3.1"
+PROCESSED_DIR = r"C:\PS1\Infectious-Disease-Triage\Data\processed"
+REPORTS_DIR   = r"C:\PS1\Infectious-Disease-Triage\reports"
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
-SEQ_LEN      = 24       # hours of context per LSTM input window
-MAX_HOURS    = 72       # how far into the ICU stay we look
-BATCH_SIZE   = 512
-EPOCHS       = 30
+SEQ_LEN      = args.seq_len
+MAX_HOURS    = args.max_hours
+BATCH_SIZE   = args.batch_size
+EPOCHS       = args.epochs
 LR           = 1e-3
 HIDDEN_SIZE  = 128
 NUM_LAYERS   = 2
 DROPOUT      = 0.3
-N_FOLDS      = 5
+N_FOLDS      = args.n_folds
+PATIENCE     = 5
+MAX_SEQUENCES = args.max_sequences
+WINDOW_STRIDE = args.window_stride
+GENERATE_PLOTS = args.plot
 DEVICE       = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {DEVICE}")
+print(f"Training config: epochs={EPOCHS}, folds={N_FOLDS}, batch_size={BATCH_SIZE}, seq_len={SEQ_LEN}, max_hours={MAX_HOURS}, stride={WINDOW_STRIDE}, max_sequences={'all' if MAX_SEQUENCES is None else MAX_SEQUENCES}")
 
 # ---------------------------------------------------------------------------- #
-#  Step 1 — Load stay metadata & labels                                        #
+#  Step 1 & 2 & 3 — Load preprocessed features.csv & Build sequences            #
 # ---------------------------------------------------------------------------- #
-print("\n[1/4] Loading metadata and labels...")
+print("\n[1/3] Loading features.csv...")
+features_file = os.path.join(PROCESSED_DIR, "features.csv")
+if not os.path.exists(features_file):
+    raise FileNotFoundError(f"Features file not found at {features_file}. Please run preprocess.py first.")
 
-icustays = pd.read_csv(
-    os.path.join(DATA_DIR, "icu", "icustays.csv.gz"),
-    usecols=['stay_id', 'subject_id', 'hadm_id', 'intime']
-)
-icustays['intime'] = pd.to_datetime(icustays['intime'])
+df = pd.read_csv(features_file)
+print(f"Loaded dataset with shape: {df.shape}")
 
-patients = pd.read_csv(
-    os.path.join(DATA_DIR, "hosp", "patients.csv.gz"),
-    usecols=['subject_id', 'anchor_age', 'gender']
-)
-patients['gender'] = (patients['gender'].str.upper() == 'M').astype(int)
+# Drop rows where target is missing
+df = df.dropna(subset=['label'])
 
-diagnoses = pd.read_csv(
-    os.path.join(DATA_DIR, "hosp", "diagnoses_icd.csv.gz"),
-    usecols=['hadm_id', 'icd_code']
-)
-d_icd = pd.read_csv(
-    os.path.join(DATA_DIR, "hosp", "d_icd_diagnoses.csv.gz"),
-    usecols=['icd_code', 'long_title']
-)
-sepsis_codes = d_icd[
-    d_icd['long_title'].str.contains('sepsis|septic', case=False, na=False)
-]['icd_code'].unique()
-sepsis_hadms = set(diagnoses[diagnoses['icd_code'].isin(sepsis_codes)]['hadm_id'])
+print("\n[2/3] Building hourly grids and sequences from features.csv...")
+grouped = df.groupby('stay_id')
 
-icustays['label'] = icustays['hadm_id'].isin(sepsis_hadms).astype(int)
-meta = icustays.merge(patients, on='subject_id', how='left')
-meta['anchor_age'] = meta['anchor_age'].fillna(meta['anchor_age'].median())
-meta['gender']     = meta['gender'].fillna(0)
+N_VITALS   = 5
+N_FEATURES = 7    # 5 vitals + age + gender
 
-print(f"  ICU stays: {len(meta)} | Sepsis positive: {meta['label'].sum()} ({meta['label'].mean()*100:.1f}%)")
-
-# ---------------------------------------------------------------------------- #
-#  Step 2 — Load vitals from chartevents (chunked)                             #
-# ---------------------------------------------------------------------------- #
-# Feature set: 5 vitals + age + gender  =>  7 features per timestep
-VITAL_IDS = {
-    220045: 0,   # Heart Rate
-    220181: 1,   # MAP (non-invasive)
-    220210: 2,   # Respiratory Rate
-    220277: 3,   # SpO2
-    223762: 4,   # Temperature (Celsius)
-}
-VITAL_DEFAULTS = [80.0, 80.0, 15.0, 98.0, 37.0]   # sensible fill values
-
-print("\n[2/4] Loading chartevents vitals (chunked)...")
-
-stay_vitals = {}   # stay_id -> {itemid -> [(charttime, valuenum), ...]}
-
-chunk_idx = 0
-for chunk in pd.read_csv(
-    os.path.join(DATA_DIR, "icu", "chartevents.csv.gz"),
-    usecols=['stay_id', 'itemid', 'charttime', 'valuenum'],
-    chunksize=1_000_000
-):
-    chunk_idx += 1
-    if chunk_idx % 10 == 0:
-        print(f"  Processed {chunk_idx}M rows...")
-    filtered = chunk[chunk['itemid'].isin(VITAL_IDS)].dropna(subset=['valuenum'])
-    for row in filtered.itertuples(index=False):
-        sid = row.stay_id
-        if sid not in stay_vitals:
-            stay_vitals[sid] = {vid: [] for vid in VITAL_IDS}
-        stay_vitals[sid][row.itemid].append((row.charttime, row.valuenum))
-
-print(f"  Stays with vitals: {len(stay_vitals)}")
-
-# ---------------------------------------------------------------------------- #
-#  Step 3 — Build hourly grids & sliding-window sequences                      #
-# ---------------------------------------------------------------------------- #
-print("\n[3/4] Building hourly grids and sequences...")
-
-N_VITALS   = len(VITAL_IDS)
-N_FEATURES = N_VITALS + 2    # +2 for age and gender
-
-sequences, labels_out, groups_out = [], [], []
+sequences = []
+labels_out = []
+groups_out = []
 skipped = 0
 
-for _, row in meta.iterrows():
-    sid        = row['stay_id']
-    subject_id = row['subject_id']
-    intime     = row['intime']
-    label      = row['label']
-    age        = row['anchor_age']
-    gender     = row['gender']
-
-    raw = stay_vitals.get(sid, None)
-    if raw is None:
+# Extract group data into a list of tuples to speed up grouping loop
+for sid, group in grouped:
+    if len(group) == 0:
         skipped += 1
         continue
-
-    # Build hourly grid: MAX_HOURS steps
+        
+    subject_id = group['subject_id'].iloc[0]
+    label = group['label'].iloc[0]
+    age = group['age'].iloc[0]
+    gender = group['gender'].iloc[0]
+    
+    # Build hourly grid of shape (MAX_HOURS, N_VITALS)
     grid = np.full((MAX_HOURS, N_VITALS), np.nan, dtype=np.float32)
-
-    for itemid, feat_idx in VITAL_IDS.items():
-        events = raw.get(itemid, [])
-        if not events:
-            continue
-        for t_str, val in events:
-            t = pd.to_datetime(t_str)
-            h = int((t - intime).total_seconds() / 3600)
-            if 0 <= h < MAX_HOURS:
-                # keep the most recent reading per hour
-                if np.isnan(grid[h, feat_idx]):
-                    grid[h, feat_idx] = val
-                # else: already filled, skip
-
-    # Forward-fill then back-fill then use defaults
+    
+    for row in group.itertuples():
+        h = int(row.hours_since_admit)
+        if 0 <= h < MAX_HOURS:
+            grid[h, 0] = row.heart_rate_mean
+            grid[h, 1] = row.mbp_mean
+            grid[h, 2] = row.resp_rate_mean
+            grid[h, 3] = row.spo2_mean
+            grid[h, 4] = row.temp_mean
+            
+    # Forward-fill / default-fill
+    defaults = [80.0, 80.0, 15.0, 98.0, 37.0]
     for vi in range(N_VITALS):
         col = grid[:, vi]
-        # forward fill
-        last = VITAL_DEFAULTS[vi]
+        last = defaults[vi]
         for h in range(MAX_HOURS):
             if not np.isnan(col[h]):
                 last = col[h]
             else:
                 col[h] = last
         grid[:, vi] = col
-
-    # Append demographics as constant columns
-    age_col    = np.full((MAX_HOURS, 1), age,    dtype=np.float32)
+        
+    # Append age and gender
+    age_col = np.full((MAX_HOURS, 1), age, dtype=np.float32)
     gender_col = np.full((MAX_HOURS, 1), gender, dtype=np.float32)
-    grid_full  = np.concatenate([grid, age_col, gender_col], axis=1)  # (MAX_HOURS, 7)
-
-    # Sliding windows of length SEQ_LEN
-    for start in range(0, MAX_HOURS - SEQ_LEN + 1):
-        seq = grid_full[start : start + SEQ_LEN]   # (SEQ_LEN, 7)
+    grid_full = np.concatenate([grid, age_col, gender_col], axis=1)
+    
+    # Sliding windows
+    for start in range(0, MAX_HOURS - SEQ_LEN + 1, WINDOW_STRIDE):
+        seq = grid_full[start : start + SEQ_LEN]
         sequences.append(seq)
         labels_out.append(label)
         groups_out.append(subject_id)
+        if MAX_SEQUENCES is not None and len(sequences) >= MAX_SEQUENCES:
+            break
+    if MAX_SEQUENCES is not None and len(sequences) >= MAX_SEQUENCES:
+        break
 
 sequences  = np.array(sequences,  dtype=np.float32)  # (N, SEQ_LEN, 7)
 labels_out = np.array(labels_out, dtype=np.float32)
 groups_out = np.array(groups_out)
 
-print(f"  Skipped stays (no vitals): {skipped}")
+print(f"  Skipped stays: {skipped}")
 print(f"  Total sequences : {sequences.shape[0]:,}")
 print(f"  Sequence shape  : {sequences.shape}")
 print(f"  Positive (sepsis): {labels_out.sum():.0f} ({labels_out.mean()*100:.2f}%)")
@@ -254,8 +211,20 @@ for fold, (tr_idx, va_idx) in enumerate(gkf.split(sequences, labels_out, groups=
         dtype=torch.float32
     ).to(DEVICE)
 
-    tr_loader = DataLoader(SepsisDataset(X_tr, y_tr), batch_size=BATCH_SIZE, shuffle=True,  num_workers=0)
-    va_loader = DataLoader(SepsisDataset(X_va, y_va), batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    tr_loader = DataLoader(
+        SepsisDataset(X_tr, y_tr),
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=0,
+        pin_memory=torch.cuda.is_available(),
+    )
+    va_loader = DataLoader(
+        SepsisDataset(X_va, y_va),
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=torch.cuda.is_available(),
+    )
 
     model     = SepsisLSTM(N_FEATURES, HIDDEN_SIZE, NUM_LAYERS, DROPOUT).to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-4)
@@ -265,6 +234,7 @@ for fold, (tr_idx, va_idx) in enumerate(gkf.split(sequences, labels_out, groups=
     best_auroc = 0.0
     best_preds = None
     ep_losses, ep_aurocs = [], []
+    patience_counter = 0
 
     for epoch in range(EPOCHS):
         model.train()
@@ -291,9 +261,15 @@ for fold, (tr_idx, va_idx) in enumerate(gkf.split(sequences, labels_out, groups=
         ep_aurocs.append(ep_auroc)
         scheduler.step(1 - ep_auroc)
 
-        if ep_auroc > best_auroc:
+        if ep_auroc > best_auroc + 1e-4:
             best_auroc = ep_auroc
             best_preds = preds_ep.copy()
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= PATIENCE:
+                print(f"  Early stopping at epoch {epoch+1}/{EPOCHS}.")
+                break
 
         if (epoch + 1) % 5 == 0:
             print(f"  Epoch {epoch+1:02d}/{EPOCHS} | Loss: {avg_loss:.4f} | Val AUROC: {ep_auroc:.4f}")
@@ -340,76 +316,79 @@ print("=" * 54)
 # ---------------------------------------------------------------------------- #
 #  Visualizations                                                               #
 # ---------------------------------------------------------------------------- #
-print("\nGenerating visualizations...")
+if GENERATE_PLOTS:
+    print("\nGenerating visualizations...")
 
-# 4-panel figure
-fig, axes = plt.subplots(2, 2, figsize=(14, 12))
-fig.suptitle(f'LSTM (True Hourly Time-Series, SEQ_LEN={SEQ_LEN}h)\nSepsis Prediction Performance',
-             fontsize=13, fontweight='bold', y=1.02)
+    # 4-panel figure
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+    fig.suptitle(f'LSTM (True Hourly Time-Series, SEQ_LEN={SEQ_LEN}h)\nSepsis Prediction Performance',
+                 fontsize=13, fontweight='bold', y=1.02)
 
-# ROC
-fpr, tpr, _ = roc_curve(labels_out, oof_preds)
-axes[0, 0].plot(fpr, tpr, color='royalblue', linewidth=2, label=f'LSTM (AUROC={lstm_auroc:.4f})')
-axes[0, 0].plot([0, 1], [0, 1], 'k--', linewidth=1, label='Random')
-axes[0, 0].set_xlabel('False Positive Rate', fontsize=11)
-axes[0, 0].set_ylabel('True Positive Rate', fontsize=11)
-axes[0, 0].set_title('ROC Curve', fontsize=12, fontweight='bold')
-axes[0, 0].legend(fontsize=10); axes[0, 0].grid(alpha=0.3)
+    # ROC
+    fpr, tpr, _ = roc_curve(labels_out, oof_preds)
+    axes[0, 0].plot(fpr, tpr, color='royalblue', linewidth=2, label=f'LSTM (AUROC={lstm_auroc:.4f})')
+    axes[0, 0].plot([0, 1], [0, 1], 'k--', linewidth=1, label='Random')
+    axes[0, 0].set_xlabel('False Positive Rate', fontsize=11)
+    axes[0, 0].set_ylabel('True Positive Rate', fontsize=11)
+    axes[0, 0].set_title('ROC Curve', fontsize=12, fontweight='bold')
+    axes[0, 0].legend(fontsize=10); axes[0, 0].grid(alpha=0.3)
 
-# PR curve
-axes[0, 1].plot(lstm_rec, lstm_prec, color='darkorange', linewidth=2,
-                label=f'LSTM (AUPRC={lstm_auprc:.4f})')
-axes[0, 1].axhline(labels_out.mean(), color='gray', linestyle='--', linewidth=1,
-                   label=f'Prevalence ({labels_out.mean():.3f})')
-axes[0, 1].set_xlabel('Recall', fontsize=11)
-axes[0, 1].set_ylabel('Precision', fontsize=11)
-axes[0, 1].set_title('Precision-Recall Curve', fontsize=12, fontweight='bold')
-axes[0, 1].legend(fontsize=10); axes[0, 1].grid(alpha=0.3)
+    # PR curve
+    axes[0, 1].plot(lstm_rec, lstm_prec, color='darkorange', linewidth=2,
+                    label=f'LSTM (AUPRC={lstm_auprc:.4f})')
+    axes[0, 1].axhline(labels_out.mean(), color='gray', linestyle='--', linewidth=1,
+                       label=f'Prevalence ({labels_out.mean():.3f})')
+    axes[0, 1].set_xlabel('Recall', fontsize=11)
+    axes[0, 1].set_ylabel('Precision', fontsize=11)
+    axes[0, 1].set_title('Precision-Recall Curve', fontsize=12, fontweight='bold')
+    axes[0, 1].legend(fontsize=10); axes[0, 1].grid(alpha=0.3)
 
-# Confusion matrix
-cm = confusion_matrix(labels_out, preds_bin)
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[1, 0], cbar=False,
-            xticklabels=['Neg', 'Pos'], yticklabels=['Neg', 'Pos'])
-axes[1, 0].set_ylabel('True Label', fontsize=11)
-axes[1, 0].set_xlabel('Predicted Label', fontsize=11)
-axes[1, 0].set_title('Confusion Matrix', fontsize=12, fontweight='bold')
+    # Confusion matrix
+    cm = confusion_matrix(labels_out, preds_bin)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[1, 0], cbar=False,
+                xticklabels=['Neg', 'Pos'], yticklabels=['Neg', 'Pos'])
+    axes[1, 0].set_ylabel('True Label', fontsize=11)
+    axes[1, 0].set_xlabel('Predicted Label', fontsize=11)
+    axes[1, 0].set_title('Confusion Matrix', fontsize=12, fontweight='bold')
 
-# Training curve (last fold)
-ax1 = axes[1, 1]
-ax2 = ax1.twinx()
-ax1.plot(range(1, EPOCHS+1), last_losses,     color='royalblue',  linewidth=2, label='Train Loss')
-ax2.plot(range(1, EPOCHS+1), last_val_aurocs, color='darkorange', linewidth=2,
-         linestyle='--', label='Val AUROC')
-ax1.set_xlabel('Epoch', fontsize=11)
-ax1.set_ylabel('Train Loss',  color='royalblue',  fontsize=11)
-ax2.set_ylabel('Val AUROC',   color='darkorange', fontsize=11)
-axes[1, 1].set_title(f'Training Curve (Fold {N_FOLDS})', fontsize=12, fontweight='bold')
-h1, l1 = ax1.get_legend_handles_labels()
-h2, l2 = ax2.get_legend_handles_labels()
-ax1.legend(h1+h2, l1+l2, fontsize=10); ax1.grid(alpha=0.3)
+    # Training curve (last fold)
+    ax1 = axes[1, 1]
+    ax2 = ax1.twinx()
+    ax1.plot(range(1, EPOCHS+1), last_losses,     color='royalblue',  linewidth=2, label='Train Loss')
+    ax2.plot(range(1, EPOCHS+1), last_val_aurocs, color='darkorange', linewidth=2,
+             linestyle='--', label='Val AUROC')
+    ax1.set_xlabel('Epoch', fontsize=11)
+    ax1.set_ylabel('Train Loss',  color='royalblue',  fontsize=11)
+    ax2.set_ylabel('Val AUROC',   color='darkorange', fontsize=11)
+    axes[1, 1].set_title(f'Training Curve (Fold {N_FOLDS})', fontsize=12, fontweight='bold')
+    h1, l1 = ax1.get_legend_handles_labels()
+    h2, l2 = ax2.get_legend_handles_labels()
+    ax1.legend(h1+h2, l1+l2, fontsize=10); ax1.grid(alpha=0.3)
 
-plt.tight_layout()
-plt.savefig(os.path.join(REPORTS_DIR, "lstm_performance.png"), dpi=300, bbox_inches='tight')
-print("Saved: lstm_performance.png")
-plt.close()
+    plt.tight_layout()
+    plt.savefig(os.path.join(REPORTS_DIR, "lstm_performance.png"), dpi=300, bbox_inches='tight')
+    print("Saved: lstm_performance.png")
+    plt.close()
 
-# Per-fold AUROC bar chart
-fig, ax = plt.subplots(figsize=(8, 5))
-bars = ax.bar([f'Fold {i+1}' for i in range(N_FOLDS)], fold_aurocs,
-              color='royalblue', alpha=0.8, edgecolor='navy')
-ax.axhline(np.mean(fold_aurocs), color='red', linestyle='--', linewidth=1.5,
-           label=f'Mean = {np.mean(fold_aurocs):.4f}')
-for bar, val in zip(bars, fold_aurocs):
-    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.003,
-            f'{val:.4f}', ha='center', va='bottom', fontsize=10)
-ax.set_ylim(0.5, 1.0)
-ax.set_xlabel('Fold', fontsize=11); ax.set_ylabel('AUROC', fontsize=11)
-ax.set_title('LSTM Per-Fold AUROC (GroupKFold CV)', fontsize=12, fontweight='bold')
-ax.legend(fontsize=10); ax.grid(alpha=0.3, axis='y')
-plt.tight_layout()
-plt.savefig(os.path.join(REPORTS_DIR, "lstm_fold_aurocs.png"), dpi=300, bbox_inches='tight')
-print("Saved: lstm_fold_aurocs.png")
-plt.close()
+    # Per-fold AUROC bar chart
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bars = ax.bar([f'Fold {i+1}' for i in range(N_FOLDS)], fold_aurocs,
+                  color='royalblue', alpha=0.8, edgecolor='navy')
+    ax.axhline(np.mean(fold_aurocs), color='red', linestyle='--', linewidth=1.5,
+               label=f'Mean = {np.mean(fold_aurocs):.4f}')
+    for bar, val in zip(bars, fold_aurocs):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.003,
+                f'{val:.4f}', ha='center', va='bottom', fontsize=10)
+    ax.set_ylim(0.5, 1.0)
+    ax.set_xlabel('Fold', fontsize=11); ax.set_ylabel('AUROC', fontsize=11)
+    ax.set_title('LSTM Per-Fold AUROC (GroupKFold CV)', fontsize=12, fontweight='bold')
+    ax.legend(fontsize=10); ax.grid(alpha=0.3, axis='y')
+    plt.tight_layout()
+    plt.savefig(os.path.join(REPORTS_DIR, "lstm_fold_aurocs.png"), dpi=300, bbox_inches='tight')
+    print("Saved: lstm_fold_aurocs.png")
+    plt.close()
+else:
+    print("Skipping plot generation. Add --plot to create them.")
 
 # ---------------------------------------------------------------------------- #
 #  Train final model & save                                                     #
@@ -446,7 +425,7 @@ torch.save({
     'model_state_dict': final_model.state_dict(),
     'scaler_mean':  scaler_final.mean_,
     'scaler_scale': scaler_final.scale_,
-    'vital_ids':    list(VITAL_IDS.keys()),
+    'vital_ids':    ["heart_rate_mean", "mbp_mean", "resp_rate_mean", "spo2_mean", "temp_mean"],
     'hyperparams': {
         'input_size':  N_FEATURES,
         'hidden_size': HIDDEN_SIZE,

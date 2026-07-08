@@ -4,8 +4,8 @@ import os
 import time
 
 # Configurations
-MIMIC_PATH = r"D:\Internship2026\Infectious-Disease-Triage\Data\mimic-iv-3.1"
-OUTPUT_PATH = r"D:\Internship2026\Infectious-Disease-Triage\Data\processed\sepsis_features.csv"
+MIMIC_PATH = r"C:\PS1\Infectious-Disease-Triage\Data\mimic-iv-3.1"
+OUTPUT_PATH = r"C:\PS1\Infectious-Disease-Triage\Data\processed\sepsis_features.csv"
 
 def main():
     start_time = time.time()
