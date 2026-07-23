@@ -1,0 +1,129 @@
+{
+  "top_20_features": [
+    {
+      "rank": 1,
+      "feature": "sofa_resp",
+      "mean_abs_shap": 0.5140746831893921,
+      "cumulative_pct": 42.289794921875
+    },
+    {
+      "rank": 2,
+      "feature": "current_sofa",
+      "mean_abs_shap": 0.1791124790906906,
+      "cumulative_pct": 57.0242919921875
+    },
+    {
+      "rank": 3,
+      "feature": "lactate_last",
+      "mean_abs_shap": 0.14453870058059692,
+      "cumulative_pct": 68.91461181640625
+    },
+    {
+      "rank": 4,
+      "feature": "sofa_cns",
+      "mean_abs_shap": 0.09371931105852127,
+      "cumulative_pct": 76.62432861328125
+    },
+    {
+      "rank": 5,
+      "feature": "sofa_renal",
+      "mean_abs_shap": 0.061351630836725235,
+      "cumulative_pct": 81.67135620117188
+    },
+    {
+      "rank": 6,
+      "feature": "creatinine_last",
+      "mean_abs_shap": 0.04368269443511963,
+      "cumulative_pct": 85.26486206054688
+    },
+    {
+      "rank": 7,
+      "feature": "mbp_min",
+      "mean_abs_shap": 0.029589522629976273,
+      "cumulative_pct": 87.69901275634766
+    },
+    {
+      "rank": 8,
+      "feature": "temp_max",
+      "mean_abs_shap": 0.02953307144343853,
+      "cumulative_pct": 90.1285171508789
+    },
+    {
+      "rank": 9,
+      "feature": "hemoglobin_last",
+      "mean_abs_shap": 0.02751263976097107,
+      "cumulative_pct": 92.39181518554688
+    },
+    {
+      "rank": 10,
+      "feature": "sbp_std",
+      "mean_abs_shap": 0.02726852148771286,
+      "cumulative_pct": 94.6350326538086
+    },
+    {
+      "rank": 11,
+      "feature": "sofa_cardio",
+      "mean_abs_shap": 0.022364063188433647,
+      "cumulative_pct": 96.47478485107422
+    },
+    {
+      "rank": 12,
+      "feature": "hematocrit_last",
+      "mean_abs_shap": 0.007351170293986797,
+      "cumulative_pct": 97.07952117919922
+    },
+    {
+      "rank": 13,
+      "feature": "wbc_last",
+      "mean_abs_shap": 0.0063114347867667675,
+      "cumulative_pct": 97.59872436523438
+    },
+    {
+      "rank": 14,
+      "feature": "sodium_last",
+      "mean_abs_shap": 0.005976916290819645,
+      "cumulative_pct": 98.09040832519531
+    },
+    {
+      "rank": 15,
+      "feature": "temp_std",
+      "mean_abs_shap": 0.005312060937285423,
+      "cumulative_pct": 98.52739715576172
+    },
+    {
+      "rank": 16,
+      "feature": "mbp_std",
+      "mean_abs_shap": 0.004326591268181801,
+      "cumulative_pct": 98.8833236694336
+    },
+    {
+      "rank": 17,
+      "feature": "platelets_last",
+      "mean_abs_shap": 0.004083301872014999,
+      "cumulative_pct": 99.21923065185547
+    },
+    {
+      "rank": 18,
+      "feature": "spo2_mean",
+      "mean_abs_shap": 0.0037855529226362705,
+      "cumulative_pct": 99.53064727783203
+    },
+    {
+      "rank": 19,
+      "feature": "chloride_last",
+      "mean_abs_shap": 0.002756881294772029,
+      "cumulative_pct": 99.75743103027344
+    },
+    {
+      "rank": 20,
+      "feature": "temp_last",
+      "mean_abs_shap": 0.0013290063943713903,
+      "cumulative_pct": 99.86676788330078
+    }
+  ],
+  "sample_size": 5000,
+  "positive_samples": 42,
+  "model_expected_value": -0.00011281459592282772,
+  "computation_date": "2026-07-23",
+  "total_features": 64
+}

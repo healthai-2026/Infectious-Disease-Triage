@@ -24,3 +24,6 @@ __pycache__/
 .vscode/
 .idea/
 *.log
+
+# Ignore large report results exceeding GitHub limit
+reports/multimodal_ablation_results.json

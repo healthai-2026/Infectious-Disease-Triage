@@ -1,7 +1,13 @@
+import json
 import os
+import random
 import re
 import numpy as np
 import pandas as pd
+
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
 
 DATA_DIR = r"C:\PS1\Infectious-Disease-Triage\Data\mimic-iv-3.1"
 PROCESSED_DIR = r"C:\PS1\Infectious-Disease-Triage\Data\processed"
@@ -119,6 +125,21 @@ for chunk in pd.read_csv(os.path.join(DATA_DIR, "icu", "chartevents.csv.gz"), us
     chartevents_chunks.append(chunk_filtered)
 df_icu_data = pd.concat(chartevents_chunks)
 df_icu_data['charttime'] = pd.to_datetime(df_icu_data['charttime'])
+
+# Apply simple physiologically plausible ranges for common vitals to reduce obvious data-entry errors.
+vital_ranges = {
+    220045: (20, 300),
+    220210: (4, 60),
+    220277: (60, 100),
+    220179: (40, 300),
+    220180: (20, 200),
+    220181: (40, 300),
+    223761: (80, 115),
+    223762: (25, 45),
+}
+for itemid, (lo, hi) in vital_ranges.items():
+    mask = (df_icu_data['itemid'] == itemid)
+    df_icu_data = df_icu_data[~(mask & ((df_icu_data['valuenum'] < lo) | (df_icu_data['valuenum'] > hi)))]
 
 labs_mapping = {
     50931: 'glucose', 52027: 'glucose', 50809: 'glucose',
@@ -693,7 +714,14 @@ for stay_id, df_stay in grouped_stays:
             'time': current_time,
             'age': age,
             'gender': 1 if gender == 'M' else 0,
-            'hours_since_admit': idx
+            'hours_since_admit': idx,
+            'current_sofa': current_row['sofa_total'],
+            'sofa_resp': current_row['sofa_resp'],
+            'sofa_coag': current_row['sofa_coag'],
+            'sofa_liver': current_row['sofa_liver'],
+            'sofa_cardio': current_row['sofa_cardio'],
+            'sofa_cns': current_row['sofa_cns'],
+            'sofa_renal': current_row['sofa_renal']
         }
         
         for col in vitals_cols:
@@ -735,6 +763,18 @@ print(f"Feature matrix built: {df_features.shape}")
 print(f"Sepsis positive samples (label=1): {df_features['label'].sum()} ({df_features['label'].mean()*100:.2f}%)")
 
 df_features.to_csv(os.path.join(PROCESSED_DIR, "features.csv"), index=False)
+
+stats = {
+    'total_patients': int(df_patients['subject_id'].nunique()),
+    'total_stays': int(df_icustays['stay_id'].nunique()),
+    'stays_with_sepsis': int(len(sepsis_onsets)),
+    'total_rows': int(len(df_features)),
+    'positive_rows': int(df_features['label'].sum()),
+    'positive_rate': float(df_features['label'].mean()),
+}
+with open(os.path.join(PROCESSED_DIR, 'stats.json'), 'w', encoding='utf-8') as handle:
+    json.dump(stats, handle, indent=4)
+print("Saved preprocessing statistics to Data/processed/stats.json")
 
 print("Preprocessing completed successfully!")
 print("Generating sepsis_sequential.npz for RNN training...")

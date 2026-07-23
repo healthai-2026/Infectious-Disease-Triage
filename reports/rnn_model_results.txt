@@ -1,59 +1,59 @@
 === COMPARATIVE SEPSIS MODEL PERFORMANCE EVALUATION ===
-Date: 2026-07-06 01:04:45
+Date: 2026-07-23 14:02:50
 
-Total Cohort Size: 70867 stays
-Train Set Size: 56693 (Sepsis rate: 5.04%)
-Test Set Size: 14174 (Sepsis rate: 5.04%)
+Total Cohort Size: 70968 stays
+Train Set Size: 56774 (Sepsis rate: 11.16%)
+Test Set Size: 14194 (Sepsis rate: 11.29%)
 
 --- RANDOM FOREST ---
-ROC-AUC: 0.49987
-PR-AUC (Average Precision): 0.05156
+ROC-AUC: 0.86912
+PR-AUC (Average Precision): 0.57886
 Confusion Matrix:
-  TN: 7587  FP: 5873
-  FN: 409  TP: 305
+  TN: 10949  FP: 1642
+  FN: 461  TP: 1142
 
 Classification Report:
               precision    recall  f1-score   support
 
-           0       0.95      0.56      0.71     13460
-           1       0.05      0.43      0.09       714
+           0       0.96      0.87      0.91     12591
+           1       0.41      0.71      0.52      1603
 
-    accuracy                           0.56     14174
-   macro avg       0.50      0.50      0.40     14174
-weighted avg       0.90      0.56      0.68     14174
+    accuracy                           0.85     14194
+   macro avg       0.68      0.79      0.72     14194
+weighted avg       0.90      0.85      0.87     14194
 
 
 --- XGBOOST ---
-ROC-AUC: 0.50378
-PR-AUC (Average Precision): 0.05209
+ROC-AUC: 0.90306
+PR-AUC (Average Precision): 0.66348
 Confusion Matrix:
-  TN: 6775  FP: 6685
-  FN: 341  TP: 373
+  TN: 11097  FP: 1494
+  FN: 365  TP: 1238
 
 Classification Report:
               precision    recall  f1-score   support
 
-           0       0.95      0.50      0.66     13460
-           1       0.05      0.52      0.10       714
+           0       0.97      0.88      0.92     12591
+           1       0.45      0.77      0.57      1603
 
-    accuracy                           0.50     14174
-   macro avg       0.50      0.51      0.38     14174
-weighted avg       0.91      0.50      0.63     14174
+    accuracy                           0.87     14194
+   macro avg       0.71      0.83      0.75     14194
+weighted avg       0.91      0.87      0.88     14194
 
 
 --- RNN - LSTM ---
-ROC-AUC: 0.98204
-PR-AUC (Average Precision): 0.67374
+ROC-AUC: 0.64198
+PR-AUC (Average Precision): 0.17566
 Confusion Matrix:
-  TN: 12449  FP: 1011
-  FN: 7  TP: 707
+  TN: 7670  FP: 4921
+  FN: 664  TP: 939
 
 Classification Report:
               precision    recall  f1-score   support
 
-           0       1.00      0.92      0.96     13460
-           1       0.41      0.99      0.58       714
+           0       0.92      0.61      0.73     12591
+           1       0.16      0.59      0.25      1603
 
-    accuracy                           0.93     14174
-   macro avg       0.71      0.96      0.77     14174
-weighted avg       0.97      0.93      0.94     14174
+    accuracy                           0.61     14194
+   macro avg       0.54      0.60      0.49     14194
+weighted avg       0.83      0.61      0.68     14194

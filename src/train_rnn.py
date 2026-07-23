@@ -1,7 +1,9 @@
-import pandas as pd
-import numpy as np
+import json
 import os
+import random
 import time
+import numpy as np
+import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -16,6 +18,10 @@ from sklearn.metrics import (
     precision_recall_curve, average_precision_score, confusion_matrix
 )
 from xgboost import XGBClassifier
+
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
 
 import torch
 import torch.nn as nn
@@ -280,6 +286,19 @@ def main():
         os.path.join(OUTPUT_DIR, 'rnn_model.pt')
     )
     print(f"Saved RNN model to {os.path.join(OUTPUT_DIR, 'rnn_model.pt')}")
+
+    metrics_payload = {
+        'auroc': float(rnn_auc),
+        'auprc': float(rnn_pr_auc),
+        'sensitivity': float(rnn_cm[1, 1] / (rnn_cm[1, 1] + rnn_cm[1, 0])) if (rnn_cm[1, 1] + rnn_cm[1, 0]) > 0 else 0.0,
+        'specificity': float(rnn_cm[0, 0] / (rnn_cm[0, 0] + rnn_cm[0, 1])) if (rnn_cm[0, 0] + rnn_cm[0, 1]) > 0 else 0.0,
+        'precision': float(rnn_cm[1, 1] / (rnn_cm[1, 1] + rnn_cm[0, 1])) if (rnn_cm[1, 1] + rnn_cm[0, 1]) > 0 else 0.0,
+        'f1_score': float((2 * rnn_cm[1, 1]) / (2 * rnn_cm[1, 1] + rnn_cm[0, 1] + rnn_cm[1, 0])) if (2 * rnn_cm[1, 1] + rnn_cm[0, 1] + rnn_cm[1, 0]) > 0 else 0.0,
+        'threshold': 0.5,
+        'confusion_matrix': {'tp': int(rnn_cm[1, 1]), 'fp': int(rnn_cm[0, 1]), 'fn': int(rnn_cm[1, 0]), 'tn': int(rnn_cm[0, 0])}
+    }
+    with open(os.path.join(OUTPUT_DIR, 'rnn_metrics.json'), 'w', encoding='utf-8') as handle:
+        json.dump(metrics_payload, handle, indent=2)
     
     print("\nStep 4: Training and evaluating RF and XGBoost baselines on the same split...")
     # Load static features dataset to train RF and XGBoost on richer stay-level features

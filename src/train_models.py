@@ -32,6 +32,7 @@ def main():
     # Feature variables (drop identifier/non-numeric columns and target)
     drop_cols = [c for c in ['stay_id', 'subject_id', 'time', 'label', 'hadm_id', 'hours_since_admit'] if c in df.columns]
     X = df.drop(columns=drop_cols)
+    X = X.select_dtypes(include=[np.number])
     
     print("\nStep 2: Preprocessing categorical variables...")
     # Gender is already numeric (0/1). Let's make sure it is integer.
@@ -208,7 +209,21 @@ def main():
     plt.close()
     print(f"Saved Feature Importances to {plot_path_fi}")
     
-    # Write summary text file
+    # Save metrics JSON for unified reporting
+    metrics_payload = {
+        'auroc': float(xgb_auc),
+        'auprc': float(xgb_pr_auc),
+        'sensitivity': float(xgb_cm[1, 1] / (xgb_cm[1, 1] + xgb_cm[1, 0])) if (xgb_cm[1, 1] + xgb_cm[1, 0]) > 0 else 0.0,
+        'specificity': float(xgb_cm[0, 0] / (xgb_cm[0, 0] + xgb_cm[0, 1])) if (xgb_cm[0, 0] + xgb_cm[0, 1]) > 0 else 0.0,
+        'precision': float(xgb_cm[1, 1] / (xgb_cm[1, 1] + xgb_cm[0, 1])) if (xgb_cm[1, 1] + xgb_cm[0, 1]) > 0 else 0.0,
+        'f1_score': float((2 * xgb_cm[1, 1]) / (2 * xgb_cm[1, 1] + xgb_cm[0, 1] + xgb_cm[1, 0])) if (2 * xgb_cm[1, 1] + xgb_cm[0, 1] + xgb_cm[1, 0]) > 0 else 0.0,
+        'threshold': 0.5,
+        'confusion_matrix': {'tp': int(xgb_cm[1, 1]), 'fp': int(xgb_cm[0, 1]), 'fn': int(xgb_cm[1, 0]), 'tn': int(xgb_cm[0, 0])}
+    }
+    with open(os.path.join(OUTPUT_DIR, 'xgboost_metrics.json'), 'w', encoding='utf-8') as handle:
+        import json
+        json.dump(metrics_payload, handle, indent=2)
+
     summary_path = os.path.join(OUTPUT_DIR, "model_results.txt")
     with open(summary_path, 'w') as f:
         f.write("=== SEPSIS MODEL PERFORMANCE EVALUATION ===\n")

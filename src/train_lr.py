@@ -14,6 +14,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
 from sklearn.impute import SimpleImputer
+import json
 
 PROCESSED_DIR = r"C:\PS1\Infectious-Disease-Triage\Data\processed"
 
@@ -171,4 +172,16 @@ final_lr.fit(X, y)
 import joblib
 joblib.dump(final_lr, os.path.join(PROCESSED_DIR, "sepsis_lr_model.pkl"))
 print(f"Saved final LR model to {os.path.join(PROCESSED_DIR, 'sepsis_lr_model.pkl')}")
+metrics_payload = {
+    'auroc': float(lr_auroc),
+    'auprc': float(lr_auprc),
+    'sensitivity': float(tp_l / (tp_l + fn_l)) if (tp_l + fn_l) > 0 else 0.0,
+    'specificity': float(tn_l / (tn_l + fp_l)) if (tn_l + fp_l) > 0 else 0.0,
+    'precision': float(tp_l / (tp_l + fp_l)) if (tp_l + fp_l) > 0 else 0.0,
+    'f1_score': float(best_lr_f1),
+    'threshold': float(best_lr_threshold),
+    'confusion_matrix': {'tp': int(tp_l), 'fp': int(fp_l), 'fn': int(fn_l), 'tn': int(tn_l)}
+}
+with open(os.path.join(REPORTS_DIR, 'lr_metrics.json'), 'w', encoding='utf-8') as handle:
+    json.dump(metrics_payload, handle, indent=2)
 print("Training completed successfully!")
