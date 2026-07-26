@@ -13,9 +13,9 @@
 
 ## Overview
 
-Sepsis is a life-threatening syndrome of organ dysfunction caused by a dysregulated host response to infection, responsible for more than 11 million deaths annually worldwide. Current bedside screening tools — most notably the quick Sequential Organ Failure Assessment (qSOFA) score — miss more than 62% of at-risk patients before irreversible deterioration occurs.
+Sepsis is a life-threatening syndrome of organ dysfunction caused by a dysregulated host response to infection, responsible for more than 11 million deaths annually worldwide. Current bedside screening tools most notably the quick Sequential Organ Failure Assessment (qSOFA) score — miss more than 62% of at-risk patients before irreversible deterioration occurs.
 
-This repository contains a complete, reproducible machine learning pipeline that predicts **Sepsis-3 onset six hours before clinical recognition**, trained on the full MIMIC-IV clinical database. We compare four model families — Logistic Regression, XGBoost, Random Forest, and a temporal LSTM — using patient-grouped cross-validation, and show that temporal deep learning substantially outperforms both clinical scoring tools and static machine learning approaches.
+This repository contains a complete, reproducible machine learning pipeline that predicts **Sepsis-3 onset six hours before clinical recognition**, trained on the full MIMIC-IV clinical database. We compare four model families Logistic Regression, XGBoost, Random Forest, and a temporal LSTM using patient-grouped cross-validation, and show that temporal deep learning substantially outperforms both clinical scoring tools and static machine learning approaches.
 
 **Headline result:** Our LSTM achieves an **AUROC of 0.9761** (AUPRC: 0.6355, Sensitivity: 78.98%, Precision: 57.18%) — a ~19-fold reduction in false-alarm burden compared to the best static model, directly addressing the alert-fatigue problem that limits clinical AI adoption.
 
@@ -129,9 +129,9 @@ All metrics, plots, and JSON result summaries are written to `reports/`. Trained
 ## Methodology Summary
 
 - **Cohort:** Adult ICU patients (age ≥ 18), ICU stay ≥ 6 hours, excluding those already septic at admission
-- **Outcome:** Sepsis-3 onset — SOFA score increase ≥ 2 points from admission baseline **and** suspected infection (culture order + antibiotic administration within a ±24h/72h window)
+- **Outcome:** Sepsis-3 onset SOFA score increase ≥ 2 points from admission baseline **and** suspected infection (culture order + antibiotic administration within a ±24h/72h window)
 - **Prediction task:** Binary classification — will the patient meet Sepsis-3 criteria within the next 6 hours?
-- **Features:** 62 features per hourly time point — 7 SOFA sub-scores, 42 vital-sign statistics (mean/std/min/max/last/slope across 7 vitals), 13 laboratory values, and 2 demographic features
+- **Features:** 62 features per hourly time point 7 SOFA sub-scores, 42 vital-sign statistics (mean/std/min/max/last/slope across 7 vitals), 13 laboratory values, and 2 demographic features
 - **Validation:** Patient-grouped cross-validation (`GroupKFold` / `GroupShuffleSplit` on `subject_id`) throughout, to prevent patient-level data leakage
 
 Full methodological detail is available in [`paper/sepsis_paper.tex`](paper/sepsis_paper.tex) and [`docs/cohort_definition.md`](docs/cohort_definition.md).
