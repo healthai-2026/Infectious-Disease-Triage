@@ -2,7 +2,7 @@
 
 **An AI-Enabled Early Warning System for Sepsis-3 Onset Prediction Using Temporal Deep Learning on the MIMIC-IV Clinical Database**
 
-> Internship Project — *AI-Enabled Clinical Triage and Remote Monitoring for Infectious Disease Care*
+> Internship Project: *AI-Enabled Clinical Triage and Remote Monitoring for Infectious Disease Care*
 > JK Lakshmipat University · May – August 2026
 
 [![Python](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/)
