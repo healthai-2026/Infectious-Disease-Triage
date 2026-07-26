@@ -13,7 +13,7 @@
 
 ## Overview
 
-Sepsis is a life-threatening syndrome of organ dysfunction caused by a dysregulated host response to infection, responsible for more than 11 million deaths annually worldwide. Current bedside screening tools most notably the quick Sequential Organ Failure Assessment (qSOFA) score — miss more than 62% of at-risk patients before irreversible deterioration occurs.
+Sepsis is a life-threatening syndrome of organ dysfunction caused by a dysregulated host response to infection, responsible for more than 11 million deaths annually worldwide. Current bedside screening tools most notably the quick Sequential Organ Failure Assessment (qSOFA) score miss more than 62% of at-risk patients before irreversible deterioration occurs.
 
 This repository contains a complete, reproducible machine learning pipeline that predicts **Sepsis-3 onset six hours before clinical recognition**, trained on the full MIMIC-IV clinical database. We compare four model families Logistic Regression, XGBoost, Random Forest, and a temporal LSTM using patient-grouped cross-validation, and show that temporal deep learning substantially outperforms both clinical scoring tools and static machine learning approaches.
 
@@ -147,24 +147,6 @@ Full methodological detail is available in [`paper/sepsis_paper.tex`](paper/seps
 - Multimodal extension currently uses a PCA-derived proxy signal rather than genuine clinical-note embeddings
 
 See the paper's Limitations and Future Work sections for the complete discussion.
-
----
-
-## Citation
-
-If you use this code or refer to these results, please cite:
-
-```bibtex
-@unpublished{agarwal2026sepsis,
-  title  = {An AI-Enabled Early Warning System for Sepsis-3 Onset Prediction
-            Using Temporal Deep Learning on the MIMIC-IV Clinical Database},
-  author = {Agarwal, Lakshya and Shekhawat, Deepanshu Singh and Sinhal, Amit},
-  year   = {2026},
-  note   = {JK Lakshmipat University}
-}
-```
-
----
 
 ## Team
 
