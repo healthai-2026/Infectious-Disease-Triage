@@ -19,6 +19,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 import argparse
 import json
 import os
+import datetime
 import time
 import numpy as np
 from sklearn.metrics import roc_auc_score, average_precision_score
@@ -39,7 +40,10 @@ args = parser.parse_args()
 # ---------------------------------------------------------------------------- #
 #  Load OOF arrays                                                              #
 # ---------------------------------------------------------------------------- #
+file_mtime = os.path.getmtime(args.oof)
+timestamp = datetime.datetime.fromtimestamp(file_mtime).strftime('%Y-%m-%d %H:%M:%S')
 print(f"Loading OOF predictions from: {args.oof}")
+print(f"  File Timestamp: {timestamp}")
 data      = np.load(args.oof)
 seq_y     = data["seq_y"].astype(np.float32)
 N         = len(seq_y)
@@ -134,6 +138,8 @@ if os.path.exists(args.results_json):
         "seed": args.seed,
         "ci_level": "95%",
         "method": "percentile bootstrap on OOF predictions",
+        "oof_file": args.oof,
+        "oof_file_timestamp": timestamp,
         "n_windows": N,
         "prevalence": round(prevalence, 6),
         "models_updated": updated

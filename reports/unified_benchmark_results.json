@@ -40,13 +40,13 @@
       ],
       "fold_auroc_mean": 0.7617,
       "fold_auroc_std": 0.0057,
-      "auroc_boot_mean": 0.7542,
-      "auroc_ci_95_lo": 0.7486,
-      "auroc_ci_95_hi": 0.7596,
+      "auroc_boot_mean": 0.7543,
+      "auroc_ci_95_lo": 0.7488,
+      "auroc_ci_95_hi": 0.7598,
       "auprc_boot_mean": 0.0228,
       "auprc_ci_95_lo": 0.0216,
       "auprc_ci_95_hi": 0.0241,
-      "n_valid_boots": 1000
+      "n_valid_boots": 2000
     },
     "XGBoost": {
       "auroc": 0.7870242384198051,
@@ -68,13 +68,13 @@
       ],
       "fold_auroc_mean": 0.7894,
       "fold_auroc_std": 0.0025,
-      "auroc_boot_mean": 0.7871,
-      "auroc_ci_95_lo": 0.7824,
-      "auroc_ci_95_hi": 0.7918,
-      "auprc_boot_mean": 0.0269,
-      "auprc_ci_95_lo": 0.0256,
-      "auprc_ci_95_hi": 0.0284,
-      "n_valid_boots": 1000
+      "auroc_boot_mean": 0.787,
+      "auroc_ci_95_lo": 0.7823,
+      "auroc_ci_95_hi": 0.7919,
+      "auprc_boot_mean": 0.027,
+      "auprc_ci_95_lo": 0.0255,
+      "auprc_ci_95_hi": 0.0285,
+      "n_valid_boots": 2000
     },
     "RandomForest": {
       "auroc": 0.7715146994337245,
@@ -96,13 +96,13 @@
       ],
       "fold_auroc_mean": 0.7718,
       "fold_auroc_std": 0.0015,
-      "auroc_boot_mean": 0.7715,
+      "auroc_boot_mean": 0.7714,
       "auroc_ci_95_lo": 0.7664,
-      "auroc_ci_95_hi": 0.7767,
+      "auroc_ci_95_hi": 0.7762,
       "auprc_boot_mean": 0.0223,
-      "auprc_ci_95_lo": 0.0212,
+      "auprc_ci_95_lo": 0.0213,
       "auprc_ci_95_hi": 0.0235,
-      "n_valid_boots": 1000
+      "n_valid_boots": 2000
     },
     "LogisticReg": {
       "auroc": 0.7542220872269114,
@@ -125,12 +125,12 @@
       "fold_auroc_mean": 0.7543,
       "fold_auroc_std": 0.0001,
       "auroc_boot_mean": 0.7542,
-      "auroc_ci_95_lo": 0.7492,
-      "auroc_ci_95_hi": 0.7594,
+      "auroc_ci_95_lo": 0.749,
+      "auroc_ci_95_hi": 0.7595,
       "auprc_boot_mean": 0.0209,
-      "auprc_ci_95_lo": 0.0198,
+      "auprc_ci_95_lo": 0.0199,
       "auprc_ci_95_hi": 0.022,
-      "n_valid_boots": 1000
+      "n_valid_boots": 2000
     },
     "qSOFA (swept)": {
       "auroc": 0.5011906608571192,
@@ -154,13 +154,13 @@
       "fold_auroc_std": 0.0004,
       "threshold_type": "max-F1 sweep (not clinical convention)",
       "note": "2-component qSOFA: RR>=22 + SBP<=100. GCS unavailable in features.csv. Threshold chosen by max-F1 sweep, same as ML models.",
-      "auroc_boot_mean": 0.5012,
-      "auroc_ci_95_lo": 0.4961,
-      "auroc_ci_95_hi": 0.5072,
+      "auroc_boot_mean": 0.5013,
+      "auroc_ci_95_lo": 0.4956,
+      "auroc_ci_95_hi": 0.5069,
       "auprc_boot_mean": 0.006,
       "auprc_ci_95_lo": 0.0058,
       "auprc_ci_95_hi": 0.0061,
-      "n_valid_boots": 1000
+      "n_valid_boots": 2000
     },
     "qSOFA (clinical)": {
       "auroc": 0.5011906608571192,
@@ -184,22 +184,24 @@
       "fold_auroc_mean": 0.5012,
       "fold_auroc_std": 0.0004,
       "note": "2-component qSOFA. Clinical threshold = both RR>=22 AND SBP<=100. GCS unavailable in features.csv (standard qSOFA uses 3 components).",
-      "auroc_boot_mean": 0.5009,
-      "auroc_ci_95_lo": 0.4952,
-      "auroc_ci_95_hi": 0.5064,
+      "auroc_boot_mean": 0.5013,
+      "auroc_ci_95_lo": 0.4951,
+      "auroc_ci_95_hi": 0.5073,
       "auprc_boot_mean": 0.006,
       "auprc_ci_95_lo": 0.0058,
       "auprc_ci_95_hi": 0.0061,
-      "n_valid_boots": 1000
+      "n_valid_boots": 2000
     }
   },
   "bootstrap": {
-    "n_bootstraps": 1000,
+    "n_bootstraps": 2000,
     "seed": 42,
     "ci_level": "95%",
     "method": "percentile bootstrap on OOF predictions",
     "n_windows": 1279595,
     "prevalence": 0.005977,
-    "models_updated": 6
+    "models_updated": 6,
+    "oof_file": "C:\\PS1\\Infectious-Disease-Triage\\reports\\oof_predictions.npz",
+    "oof_file_timestamp": "2026-08-04 15:41:03"
   }
 }
