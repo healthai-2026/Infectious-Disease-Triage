@@ -1,0 +1,154 @@
+{
+  "config": {
+    "seq_len": 12,
+    "stride": 3,
+    "horizon": 6,
+    "n_folds": 2,
+    "lstm_epochs": 10,
+    "n_windows": 1279595,
+    "n_features_raw": 64,
+    "n_features_enriched_flat": 1088,
+    "label": "sepsis onset in next 6 hours",
+    "split": "2-fold GroupKFold by subject_id",
+    "improvements": [
+      "label fixed to 6h prediction horizon",
+      "temporal stats added (mean/std/min/max/slope per feature)",
+      "XGBoost: 500 trees, lr=0.03, aucpr eval, early stopping",
+      "LSTM: attention pooling, AdamW, cosine LR schedule",
+      "RF: 300 trees, max_depth=10",
+      "LR: saga solver, max_iter=5000"
+    ]
+  },
+  "results": {
+    "LSTM": {
+      "auroc": 0.7605525609541184,
+      "auprc": 0.02115842722873154,
+      "auprc_lift": 3.54,
+      "prevalence": 0.005977,
+      "f1": 0.059857594469229176,
+      "threshold": 0.7163959390862945,
+      "sensitivity": 0.1324529288702929,
+      "specificity": 0.9801988604871115,
+      "precision": 0.03866559792358487,
+      "tp": 1013,
+      "fp": 25186,
+      "fn": 6635,
+      "tn": 1246761,
+      "fold_aurocs": [
+        0.761,
+        0.7625
+      ],
+      "fold_auroc_mean": 0.7617,
+      "fold_auroc_std": 0.0007
+    },
+    "XGBoost": {
+      "auroc": 0.7870242384198051,
+      "auprc": 0.02689498466457306,
+      "auprc_lift": 4.5,
+      "prevalence": 0.005977,
+      "f1": 0.07351351351351351,
+      "threshold": 0.7661421319796955,
+      "sensitivity": 0.13336820083682008,
+      "specificity": 0.9849978025813969,
+      "precision": 0.050741219779126455,
+      "tp": 1020,
+      "fp": 19082,
+      "fn": 6628,
+      "tn": 1252865,
+      "fold_aurocs": [
+        0.7869,
+        0.7919
+      ],
+      "fold_auroc_mean": 0.7894,
+      "fold_auroc_std": 0.0025
+    },
+    "RandomForest": {
+      "auroc": 0.7715146994337245,
+      "auprc": 0.022254617227207805,
+      "auprc_lift": 3.72,
+      "prevalence": 0.005977,
+      "f1": 0.05719908166612004,
+      "threshold": 0.741269035532995,
+      "sensitivity": 0.11401673640167365,
+      "specificity": 0.9827272677242055,
+      "precision": 0.03817529113037387,
+      "tp": 872,
+      "fp": 21970,
+      "fn": 6776,
+      "tn": 1249977,
+      "fold_aurocs": [
+        0.7733,
+        0.7703
+      ],
+      "fold_auroc_mean": 0.7718,
+      "fold_auroc_std": 0.0015
+    },
+    "LogisticReg": {
+      "auroc": 0.7542220872269114,
+      "auprc": 0.02088040822631,
+      "auprc_lift": 3.49,
+      "prevalence": 0.005977,
+      "f1": 0.05934103846817319,
+      "threshold": 0.8059390862944162,
+      "sensitivity": 0.0899581589958159,
+      "specificity": 0.9883234128466044,
+      "precision": 0.044272844272844274,
+      "tp": 688,
+      "fp": 14852,
+      "fn": 6960,
+      "tn": 1257095,
+      "fold_aurocs": [
+        0.7544,
+        0.7541
+      ],
+      "fold_auroc_mean": 0.7543,
+      "fold_auroc_std": 0.0001
+    },
+    "qSOFA (swept)": {
+      "auroc": 0.5011906608571192,
+      "auprc": 0.005975943433006764,
+      "auprc_lift": 1.0,
+      "prevalence": 0.005977,
+      "f1": 0.01192775417238302,
+      "threshold": 0.01,
+      "sensitivity": 0.46835774058577406,
+      "specificity": 0.5366269192033944,
+      "precision": 0.0060407981543692075,
+      "tp": 3582,
+      "fp": 589386,
+      "fn": 4066,
+      "tn": 682561,
+      "fold_aurocs": [
+        0.5008,
+        0.5016
+      ],
+      "fold_auroc_mean": 0.5012,
+      "fold_auroc_std": 0.0004,
+      "threshold_type": "max-F1 sweep (not clinical convention)",
+      "note": "2-component qSOFA: RR>=22 + SBP<=100. GCS unavailable in features.csv. Threshold chosen by max-F1 sweep, same as ML models."
+    },
+    "qSOFA (clinical)": {
+      "auroc": 0.5011906608571192,
+      "auprc": 0.005975943433006764,
+      "auprc_lift": 1.0,
+      "prevalence": 0.005977,
+      "threshold": 1.0,
+      "threshold_type": "clinical convention (both criteria met)",
+      "sensitivity": 0.06040794979079498,
+      "specificity": 0.9346765234714969,
+      "precision": 0.005529622980251347,
+      "f1": 0.010131801135989825,
+      "tp": 462,
+      "fp": 83088,
+      "fn": 7186,
+      "tn": 1188859,
+      "fold_aurocs": [
+        0.5008,
+        0.5016
+      ],
+      "fold_auroc_mean": 0.5012,
+      "fold_auroc_std": 0.0004,
+      "note": "2-component qSOFA. Clinical threshold = both RR>=22 AND SBP<=100. GCS unavailable in features.csv (standard qSOFA uses 3 components)."
+    }
+  }
+}
