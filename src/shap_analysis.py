@@ -1,5 +1,5 @@
 """
-SHAP Explainability Analysis for Sepsis-3 XGBoost Model
+SHAP Explainability Analysis for Sepsis-3 XGBoost Model (Unified Benchmark version)
 =========================================================
 Generates SHAP-based feature importance plots and clinical interpretations.
 """
@@ -8,12 +8,14 @@ import os
 import json
 import warnings
 from datetime import datetime
+import joblib
 
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from sklearn.model_selection import StratifiedShuffleSplit
 
 # Check for required libraries
 try:
@@ -25,7 +27,6 @@ except ImportError:
 
 try:
     import xgboost as xgb
-    from sklearn.model_selection import StratifiedShuffleSplit
 except ImportError as e:
     print(f"ERROR: Missing required library: {e}")
     exit(1)
@@ -37,116 +38,136 @@ ROOT_DIR = r"C:\PS1\Infectious-Disease-Triage"
 PROCESSED_DIR = os.path.join(ROOT_DIR, "Data", "processed")
 REPORTS_DIR = os.path.join(ROOT_DIR, "reports")
 FEATURES_FILE = os.path.join(PROCESSED_DIR, "features.csv")
-MODEL_FILE = os.path.join(PROCESSED_DIR, "sepsis_xgb_model.json")
+MODEL_FILE = os.path.join(PROCESSED_DIR, "unified_xgb_model.json")
+IMPUTER_FILE = os.path.join(PROCESSED_DIR, "unified_imputer.pkl")
+SCALER_FILE = os.path.join(PROCESSED_DIR, "unified_scaler.pkl")
+BENCHMARK_RESULTS = os.path.join(REPORTS_DIR, "unified_benchmark_results.json")
 
 SAMPLE_SIZE = 5000
 RANDOM_STATE = 42
 
-# Clinical feature name mapping
-CLINICAL_MAPPING = {
-    'lactate_last': "Lactate level (tissue hypoperfusion marker)",
-    'current_sofa': "Total SOFA score (organ dysfunction severity)",
-    'sofa_resp': "Respiratory SOFA (lung dysfunction)",
-    'sofa_renal': "Renal SOFA (kidney dysfunction)",
-    'sofa_coag': "Coagulation SOFA (clotting dysfunction)",
-    'sofa_cns': "CNS SOFA (neurological dysfunction / GCS)",
-    'sofa_liver': "Hepatic SOFA (liver dysfunction / bilirubin)",
-    'sofa_cardio': "Cardiovascular SOFA (cardiovascular dysfunction / MAP / vasopressors)",
-    'heart_rate_slope': "Heart rate trend (rising = deterioration)",
-    'resp_rate_slope': "Respiratory rate trend",
-    'sbp_slope': "Blood pressure trend (falling = shock risk)",
-    'spo2_min': "Minimum SpO2 (worst oxygenation in window)",
-    'wbc_last': "White blood cell count (infection marker)",
-}
-
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
 print("=" * 70)
-print("SHAP Explainability Analysis for Sepsis-3 Prediction")
+print("SHAP Explainability Analysis for Sepsis-3 Prediction (Unified Benchmark)")
 print("=" * 70)
 
-# ============================================================================
-# [1/5] LOAD DATA AND MODEL
-# ============================================================================
-print("\n[1/5] Loading data and model...")
-
-if not os.path.exists(FEATURES_FILE):
-    print(f"ERROR: Features file not found at {FEATURES_FILE}")
-    print("Please run preprocess.py first.")
+print("\n[1/5] Loading configuration and models...")
+if not os.path.exists(BENCHMARK_RESULTS):
+    print(f"ERROR: {BENCHMARK_RESULTS} not found.")
     exit(1)
+with open(BENCHMARK_RESULTS, "r") as f:
+    benchmark_json = json.load(f)
+config = benchmark_json["config"]
+SEQ_LEN = config["seq_len"]
+STRIDE = config["stride"]
+HORIZON = config["horizon"]
+print(f"  Config: seq_len={SEQ_LEN}, stride={STRIDE}, horizon={HORIZON}")
 
 if not os.path.exists(MODEL_FILE):
     print(f"ERROR: Model file not found at {MODEL_FILE}")
-    print("Expected: {MODEL_FILE}")
+    print("Please run unified_benchmark.py first.")
+    exit(1)
+if not os.path.exists(IMPUTER_FILE) or not os.path.exists(SCALER_FILE):
+    print("ERROR: Imputer or Scaler missing. Please run unified_benchmark.py first.")
     exit(1)
 
-# Load features
-print(f"  Loading features from {FEATURES_FILE}")
-df = pd.read_csv(FEATURES_FILE)
-print(f"  Loaded: {df.shape[0]:,} rows × {df.shape[1]} columns")
-
-# Drop identifier columns
-exclude_cols = {'stay_id', 'subject_id', 'time', 'hadm_id', 'hours_since_admit'}
-drop_cols = [c for c in exclude_cols if c in df.columns]
-df = df.drop(columns=drop_cols, errors='ignore')
-
-# Separate features and labels
-y = df['label'].astype(int)
-X = df.drop(columns=['label'])
-
-print(f"  Features: {X.shape[1]} columns")
-print(f"  Target distribution: {y.sum():,} positive ({y.mean()*100:.2f}%)")
-
-# Load model
-print(f"  Loading XGBoost model from {MODEL_FILE}")
 model = xgb.XGBClassifier()
 model.load_model(MODEL_FILE)
-print(f"  Model loaded successfully")
+imputer = joblib.load(IMPUTER_FILE)
+scaler = joblib.load(SCALER_FILE)
+print("  Model, imputer, and scaler loaded.")
 
-# ============================================================================
-# [2/5] STRATIFIED SAMPLE FOR SHAP COMPUTATION
-# ============================================================================
-print("\n[2/5] Sampling data for SHAP computation...")
+print("\n[2/5] Loading data and building windows...")
+df = pd.read_csv(FEATURES_FILE)
+df = df.dropna(subset=["label"])
+df = df.sort_values(["stay_id", "hours_since_admit"]).reset_index(drop=True)
 
-sss = StratifiedShuffleSplit(n_splits=1, test_size=SAMPLE_SIZE, random_state=RANDOM_STATE)
-_, sample_idx = next(sss.split(X, y))
+ID_COLS = [c for c in ["stay_id", "subject_id", "hadm_id", "time", "hours_since_admit", "label"] if c in df.columns]
+FEAT_COLS = [c for c in df.columns if c not in ID_COLS and pd.api.types.is_numeric_dtype(df[c])]
 
-X_sample = X.iloc[sample_idx].reset_index(drop=True)
-y_sample = y.iloc[sample_idx].reset_index(drop=True)
+if len(FEAT_COLS) != config["n_features_raw"]:
+    SOFA_COLS = [c for c in FEAT_COLS if "sofa" in c.lower()]
+    FEAT_COLS = [c for c in FEAT_COLS if c not in SOFA_COLS]
+N_FEAT = len(FEAT_COLS)
+print(f"  Using {N_FEAT} raw features.")
 
-n_positive = y_sample.sum()
-print(f"  Sample size: {len(X_sample):,} rows")
-print(f"  Positive samples: {n_positive:,} ({y_sample.mean()*100:.2f}%)")
-print(f"  Feature columns: {list(X_sample.columns[:5])}... ({X_sample.shape[1]} total)")
+Xfull = df[FEAT_COLS].values.astype(np.float32)
+yfull = df["label"].values.astype(np.float32)
+group_key = "subject_id" if "subject_id" in df.columns else "stay_id"
 
-# ============================================================================
-# [3/5] COMPUTE SHAP VALUES
-# ============================================================================
-print("\n[3/5] Computing SHAP values (this may take 1-2 minutes)...")
+seq_X, seq_y = [], []
+for stay_id, grp in df.groupby("stay_id", sort=False):
+    idx = grp.index.tolist()
+    n = len(idx)
+    if n < SEQ_LEN: continue
+    for start in range(0, n - SEQ_LEN + 1, STRIDE):
+        end = start + SEQ_LEN
+        future_idx = idx[end : end + HORIZON]
+        if len(future_idx) == 0: continue
+        label = 1.0 if yfull[future_idx].sum() > 0 else 0.0
+        seq_X.append(Xfull[idx[start:end]])
+        seq_y.append(label)
 
+seq_X = np.array(seq_X, dtype=np.float32)
+seq_y = np.array(seq_y, dtype=np.float32)
+
+def add_temporal_stats(X_3d):
+    N, T, F = X_3d.shape
+    means  = X_3d.mean(axis=1)
+    stds   = X_3d.std(axis=1)
+    mins   = X_3d.min(axis=1)
+    maxs   = X_3d.max(axis=1)
+    t      = (np.arange(T, dtype=np.float32) - T / 2.0)
+    denom  = float((t ** 2).sum())
+    slopes = (X_3d * t[np.newaxis, :, np.newaxis]).sum(axis=1) / denom
+    raw    = X_3d.reshape(N, -1)
+    return np.concatenate([raw, means, stds, mins, maxs, slopes], axis=1).astype(np.float32)
+
+print("\n[3/5] Applying imputation, scaling, and temporal stats...")
+N_WIN = len(seq_X)
+seq_X_flat_raw = seq_X.reshape(N_WIN, -1)
+X_imp = imputer.transform(seq_X_flat_raw)
+X_raw = scaler.transform(X_imp).astype(np.float32)
+X_3d = X_raw.reshape(-1, SEQ_LEN, N_FEAT)
+X_enr = add_temporal_stats(X_3d)
+
+# Feature Names Generation
+enriched_feature_names = []
+for t_idx in range(SEQ_LEN):
+    for f in FEAT_COLS:
+        enriched_feature_names.append(f"{f}_t{t_idx}")
+for stat in ["mean", "std", "min", "max", "slope"]:
+    for f in FEAT_COLS:
+        enriched_feature_names.append(f"{f}_{stat}")
+
+X_enr_df = pd.DataFrame(X_enr, columns=enriched_feature_names)
+y_enr_df = pd.Series(seq_y, name="label")
+
+# Stratified Sample
+print(f"  Sampling {SAMPLE_SIZE} instances for SHAP...")
+actual_sample_size = min(SAMPLE_SIZE, len(X_enr_df))
+sss = StratifiedShuffleSplit(n_splits=1, test_size=actual_sample_size, random_state=RANDOM_STATE)
+_, sample_idx = next(sss.split(X_enr_df, y_enr_df))
+X_sample = X_enr_df.iloc[sample_idx].reset_index(drop=True)
+y_sample = y_enr_df.iloc[sample_idx].reset_index(drop=True)
+
+print(f"  Sample shape: {X_sample.shape}, Positive: {y_sample.sum()}")
+
+print("\n[4/5] Computing SHAP values (this may take a moment)...")
 try:
     explainer = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(X_sample)
-    
-    # For binary classification, shap_values may be a list; use the positive class
     if isinstance(shap_values, list):
         shap_values = shap_values[1]
-    
     model_expected_value = explainer.expected_value
     if isinstance(model_expected_value, list):
         model_expected_value = model_expected_value[1]
-    
-    print(f"  SHAP values computed: shape {shap_values.shape}")
-    print(f"  Model expected value: {model_expected_value:.4f}")
 except Exception as e:
     print(f"ERROR: Failed to compute SHAP values: {e}")
     exit(1)
 
-# ============================================================================
-# [4/5] FEATURE IMPORTANCE RANKING
-# ============================================================================
-print("\n[4/5] Computing feature importance...")
-
+print("\n[5/5] Generating plots and reports...")
 mean_abs_shap = np.abs(shap_values).mean(axis=0)
 feature_importance = pd.DataFrame({
     'feature': X_sample.columns,
@@ -154,106 +175,37 @@ feature_importance = pd.DataFrame({
 }).sort_values('mean_abs_shap', ascending=False).reset_index(drop=True)
 
 feature_importance['rank'] = feature_importance.index + 1
-feature_importance['cumulative_pct'] = (
-    100 * feature_importance['mean_abs_shap'].cumsum() / feature_importance['mean_abs_shap'].sum()
-)
+feature_importance['cumulative_pct'] = 100 * feature_importance['mean_abs_shap'].cumsum() / feature_importance['mean_abs_shap'].sum()
 
-print("\nTop 10 Features by Mean Absolute SHAP Value:")
-print("=" * 80)
+print("\nTop 10 Features:")
 for idx, row in feature_importance.head(10).iterrows():
-    print(f"  {int(row['rank']):2d}. {row['feature']:30s} | "
-          f"Mean |SHAP| = {row['mean_abs_shap']:.6f} | Cumulative = {row['cumulative_pct']:6.2f}%")
-print("=" * 80)
+    print(f"  {int(row['rank']):2d}. {row['feature']:30s} | {row['mean_abs_shap']:9.6f}")
 
-# ============================================================================
-# [5/5] GENERATE PLOTS
-# ============================================================================
-print("\n[5/5] Generating plots...")
-
-plot_count = 0
-plot_errors = []
-
-# Plot 1: SHAP Summary Beeswarm
 try:
-    print("  Generating Plot 1/5: SHAP Summary Beeswarm...")
     plt.figure(figsize=(12, 8))
     shap.summary_plot(shap_values, X_sample, plot_type="dot", max_display=20, show=False)
-    plt.title("SHAP Feature Importance — Top 20 Predictors of Sepsis-3 Onset", 
-              fontsize=14, fontweight='bold', pad=20)
     plt.tight_layout()
-    plot_path = os.path.join(REPORTS_DIR, "shap_summary_beeswarm.png")
-    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    plt.savefig(os.path.join(REPORTS_DIR, "shap_summary_beeswarm.png"), dpi=150, bbox_inches='tight')
     plt.close()
-    plot_count += 1
-    print(f"    [OK] Saved: {plot_path}")
-except Exception as e:
-    msg = f"Plot 1 (beeswarm) failed: {e}"
-    print(f"    [ERROR] {msg}")
-    plot_errors.append(msg)
-
-# Plot 2: SHAP Summary Bar
-try:
-    print("  Generating Plot 2/5: SHAP Summary Bar...")
+    
     plt.figure(figsize=(12, 8))
     shap.summary_plot(shap_values, X_sample, plot_type="bar", max_display=20, show=False)
-    plt.title("Mean Absolute SHAP Values — Feature Importance Ranking", 
-              fontsize=14, fontweight='bold', pad=20)
     plt.tight_layout()
-    plot_path = os.path.join(REPORTS_DIR, "shap_summary_bar.png")
-    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    plt.savefig(os.path.join(REPORTS_DIR, "shap_summary_bar.png"), dpi=150, bbox_inches='tight')
     plt.close()
-    plot_count += 1
-    print(f"    [OK] Saved: {plot_path}")
-except Exception as e:
-    msg = f"Plot 2 (bar) failed: {e}"
-    print(f"    [ERROR] {msg}")
-    plot_errors.append(msg)
-
-# Plot 3: Dependence Plot - Lactate (or top feature)
-try:
-    print("  Generating Plot 3/5: SHAP Dependence Plot (Lactate)...")
-    dep_feature = 'lactate_last' if 'lactate_last' in X_sample.columns else feature_importance.iloc[0]['feature']
-    plt.figure(figsize=(10, 6))
-    shap.dependence_plot(dep_feature, shap_values, X_sample, interaction_index="auto", show=False)
-    plt.title(f"SHAP Dependence Plot — {dep_feature}", fontsize=14, fontweight='bold', pad=20)
-    plt.tight_layout()
-    plot_path = os.path.join(REPORTS_DIR, "shap_dependence_lactate.png")
-    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    plot_count += 1
-    print(f"    [OK] Saved: {plot_path}")
-except Exception as e:
-    msg = f"Plot 3 (dependence lactate) failed: {e}"
-    print(f"    [ERROR] {msg}")
-    plot_errors.append(msg)
-
-# Plot 4: Dependence Plot - SOFA (or second top feature)
-try:
-    print("  Generating Plot 4/5: SHAP Dependence Plot (SOFA)...")
-    dep_feature2 = 'current_sofa' if 'current_sofa' in X_sample.columns else feature_importance.iloc[1]['feature']
-    plt.figure(figsize=(10, 6))
-    shap.dependence_plot(dep_feature2, shap_values, X_sample, interaction_index="auto", show=False)
-    plt.title(f"SHAP Dependence Plot — {dep_feature2}", fontsize=14, fontweight='bold', pad=20)
-    plt.tight_layout()
-    plot_path = os.path.join(REPORTS_DIR, "shap_dependence_sofa.png")
-    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    plot_count += 1
-    print(f"    [OK] Saved: {plot_path}")
-except Exception as e:
-    msg = f"Plot 4 (dependence sofa) failed: {e}"
-    print(f"    [ERROR] {msg}")
-    plot_errors.append(msg)
-
-# Plot 5: Waterfall Plot - Highest Confidence True Positive
-try:
-    print("  Generating Plot 5/5: SHAP Waterfall (True Positive)...")
     
-    # Find highest confidence true positive
-    y_pred_proba = model.predict_proba(X_sample)[:, 1]
+    top_feature = feature_importance.iloc[0]['feature']
+    plt.figure(figsize=(10, 6))
+    shap.dependence_plot(top_feature, shap_values, X_sample, interaction_index="auto", show=False)
+    plt.tight_layout()
+    # Clean the feature name for file path in case it has weird characters
+    clean_top_feature = "".join([c if c.isalnum() else "_" for c in top_feature])
+    plt.savefig(os.path.join(REPORTS_DIR, f"shap_dependence_{clean_top_feature}.png"), dpi=150, bbox_inches='tight')
+    plt.close()
+    
     tp_mask = y_sample == 1
-    
     if tp_mask.sum() > 0:
+        y_pred_proba = model.predict_proba(X_sample)[:, 1]
         tp_indices = np.where(tp_mask)[0]
         best_tp_idx = tp_indices[np.argmax(y_pred_proba[tp_indices])]
         
@@ -266,104 +218,26 @@ try:
             max_display=15,
             show=False
         )
-        plt.title("SHAP Waterfall — Highest Confidence Sepsis Prediction (True Positive)", 
-                  fontsize=14, fontweight='bold', pad=20)
         plt.tight_layout()
-        plot_path = os.path.join(REPORTS_DIR, "shap_waterfall_positive.png")
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.savefig(os.path.join(REPORTS_DIR, "shap_waterfall_positive.png"), dpi=150, bbox_inches='tight')
         plt.close()
-        plot_count += 1
-        print(f"    [OK] Saved: {plot_path}")
-    else:
-        print(f"    [WARNING] No true positive samples in this batch; skipping waterfall plot")
-        
+
 except Exception as e:
-    msg = f"Plot 5 (waterfall) failed: {e}"
-    print(f"    [ERROR] {msg}")
-    plot_errors.append(msg)
-
-print(f"\n  Plots generated: {plot_count}/5")
-if plot_errors:
-    print(f"  Errors encountered:")
-    for err in plot_errors:
-        print(f"    - {err}")
-
-# ============================================================================
-# SAVE TEXT OUTPUT
-# ============================================================================
-print("\nSaving feature importance report...")
+    print(f"Plotting error: {e}")
 
 text_path = os.path.join(REPORTS_DIR, "shap_feature_importance.txt")
 with open(text_path, 'w', encoding='utf-8') as f:
-    f.write("=" * 90 + "\n")
-    f.write("SHAP Feature Importance Report — Sepsis-3 Prediction Model\n")
-    f.write("=" * 90 + "\n\n")
-    
-    f.write(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-    f.write(f"Sample Size: {len(X_sample):,}\n")
-    f.write(f"Positive Samples: {n_positive:,} ({y_sample.mean()*100:.2f}%)\n")
-    f.write(f"Model Expected Value: {model_expected_value:.6f}\n\n")
-    
-    f.write("Rank | Feature Name                       | Mean |SHAP| | Cumulative %\n")
-    f.write("-" * 90 + "\n")
-    
+    f.write("SHAP Feature Importance (Unified Benchmark)\n" + "="*50 + "\n")
     for _, row in feature_importance.iterrows():
-        rank = int(row['rank'])
-        feature = row['feature']
-        mean_shap = row['mean_abs_shap']
-        cum_pct = row['cumulative_pct']
-        f.write(f"{rank:4d} | {feature:34s} | {mean_shap:9.6f}  | {cum_pct:7.2f}%\n")
-
-print(f"[OK] Saved: {text_path}")
-
-# ============================================================================
-# SAVE JSON OUTPUT
-# ============================================================================
-print("Saving SHAP results JSON...")
+        f.write(f"{int(row['rank']):4d} | {row['feature']:35s} | {row['mean_abs_shap']:9.6f}\n")
 
 json_path = os.path.join(REPORTS_DIR, "shap_results.json")
 top_20 = feature_importance.head(20).to_dict('records')
-top_20_clean = [
-    {
-        'rank': int(item['rank']),
-        'feature': item['feature'],
-        'mean_abs_shap': float(item['mean_abs_shap']),
-        'cumulative_pct': float(item['cumulative_pct'])
-    }
-    for item in top_20
-]
-
-results = {
-    'top_20_features': top_20_clean,
-    'sample_size': int(len(X_sample)),
-    'positive_samples': int(n_positive),
-    'model_expected_value': float(model_expected_value),
-    'computation_date': datetime.now().strftime('%Y-%m-%d'),
-    'total_features': int(X_sample.shape[1])
-}
-
+for item in top_20:
+    item['rank'] = int(item['rank'])
+    item['mean_abs_shap'] = float(item['mean_abs_shap'])
+    item['cumulative_pct'] = float(item['cumulative_pct'])
 with open(json_path, 'w', encoding='utf-8') as f:
-    json.dump(results, f, indent=2)
+    json.dump({'top_20_features': top_20, 'sample_size': actual_sample_size}, f, indent=2)
 
-print(f"[OK] Saved: {json_path}")
-
-# ============================================================================
-# CLINICAL INTERPRETATION
-# ============================================================================
-print("\n" + "=" * 90)
-print("CLINICAL INTERPRETATION")
-print("=" * 90)
-print("\nTop 5 Predictors of Sepsis-3 Onset (6-hour horizon):\n")
-
-for idx, row in feature_importance.head(5).iterrows():
-    rank = int(row['rank'])
-    feature = row['feature']
-    mean_shap = row['mean_abs_shap']
-    clinical = CLINICAL_MAPPING.get(feature, feature)
-    print(f"  {rank}. {feature}")
-    print(f"     Mean |SHAP|: {mean_shap:.6f}")
-    print(f"     Clinical: {clinical}\n")
-
-print("=" * 90)
-print(f"\nDone! All outputs saved to {REPORTS_DIR}/")
-print("=" * 90)
+print("\nDone! SHAP outputs saved to reports/")

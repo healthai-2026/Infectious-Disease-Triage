@@ -27,6 +27,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 import argparse
+import random
 import os
 import json
 import numpy as np
@@ -35,6 +36,15 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 import matplotlib
 matplotlib.use("Agg")
@@ -61,7 +71,7 @@ parser.add_argument("--seq-len",     type=int,  default=12,   help="Lookback win
 parser.add_argument("--stride",      type=int,  default=3,    help="Stride between windows")
 parser.add_argument("--horizon",     type=int,  default=6,    help="Prediction horizon: sepsis in next N hours")
 parser.add_argument("--epochs",      type=int,  default=10,   help="LSTM training epochs per fold")
-parser.add_argument("--n-folds",     type=int,  default=2,    help="GroupKFold folds")
+parser.add_argument("--n-folds",     type=int,  default=5,    help="GroupKFold folds")
 parser.add_argument("--batch",       type=int,  default=256,  help="LSTM batch size")
 parser.add_argument("--max-windows", type=int,  default=None, help="Cap total windows (quick test, e.g. 200000)")
 parser.add_argument("--no-sofa",     action="store_true",     help="Exclude SOFA columns (leakage ablation)")
@@ -122,9 +132,8 @@ print(f"    Feature columns: {N_FEAT}")
 # ---------------------------------------------------------------------------- #
 #  2. IMPUTE globally (median)                                                  #
 # ---------------------------------------------------------------------------- #
-print("\n[2] Imputing missing values ...")
-imputer = SimpleImputer(strategy="median")
-Xfull = imputer.fit_transform(df[FEAT_COLS]).astype(np.float32)  # (N_rows, N_FEAT)
+print("\n[2] Skipping global imputation (moved to fold-level to prevent leakage)...")
+Xfull = df[FEAT_COLS].values.astype(np.float32)  # (N_rows, N_FEAT)
 yfull = df["label"].values.astype(np.float32)
 
 group_key = "subject_id" if "subject_id" in df.columns else "stay_id"
@@ -225,23 +234,24 @@ class SepsisDS(Dataset):
 
 
 class SepsisLSTM(nn.Module):
-    """2-layer LSTM using last-timestep hidden state.
-    Attention pooling was unstable on small positive class (~900 per fold).
-    Last-step is simpler, lower-variance, and more stable under high imbalance.
-    """
+    """2-layer LSTM with additive attention pooling."""
     def __init__(self, n_feat, hidden, n_layers, drop):
         super().__init__()
         self.lstm = nn.LSTM(n_feat, hidden, n_layers,
                             batch_first=True,
                             dropout=drop if n_layers > 1 else 0.0)
+        self.attention = nn.Linear(hidden, 1)
         self.norm  = nn.LayerNorm(hidden)
         self.drop  = nn.Dropout(drop)
         self.fc    = nn.Linear(hidden, 1)
 
     def forward(self, x):
-        out, _ = self.lstm(x)       # (B, T, H)
-        last   = out[:, -1, :]      # last timestep: (B, H)
-        return self.fc(self.drop(self.norm(last))).squeeze(-1)
+        out, _ = self.lstm(x)             # (B, T, hidden)
+        attn_weights = torch.softmax(self.attention(out), dim=1) # (B, T, 1)
+        context = torch.sum(attn_weights * out, dim=1)           # (B, hidden)
+        context = self.norm(context)
+        context = self.drop(context)
+        return self.fc(context).squeeze(1)
 
 
 # ---------------------------------------------------------------------------- #
@@ -309,6 +319,11 @@ MODEL_NAMES = ["LSTM", "XGBoost", "RandomForest", "LogisticReg"]
 oof = {name: np.zeros(N_WIN) for name in MODEL_NAMES}
 fold_aurocs = {name: [] for name in MODEL_NAMES}
 
+best_xgb_auroc = 0.0
+best_xgb_model = None
+best_imputer = None
+best_scaler = None
+
 SEP = "-" * 65
 
 for fold, (tr_idx, va_idx) in enumerate(splits):
@@ -321,10 +336,15 @@ for fold, (tr_idx, va_idx) in enumerate(splits):
     pos_w = float((y_tr == 0).sum() / max((y_tr == 1).sum(), 1))
     print(f"  Positive weight (pos_w) : {pos_w:.1f}")
 
+    # Impute missing values inside fold to prevent leakage
+    imputer = SimpleImputer(strategy="median")
+    X_tr_imp = imputer.fit_transform(seq_X_flat_raw[tr_idx])
+    X_va_imp = imputer.transform(seq_X_flat_raw[va_idx])
+
     # Per-fold scaler on raw flat (keeps LSTM 3-D shape correct)
     scaler       = StandardScaler()
-    X_tr_raw     = scaler.fit_transform(seq_X_flat_raw[tr_idx]).astype(np.float32)
-    X_va_raw     = scaler.transform(seq_X_flat_raw[va_idx]).astype(np.float32)
+    X_tr_raw     = scaler.fit_transform(X_tr_imp).astype(np.float32)
+    X_va_raw     = scaler.transform(X_va_imp).astype(np.float32)
 
     # 3-D tensors for LSTM
     X_tr_3d = X_tr_raw.reshape(-1, SEQ_LEN, N_FEAT)
@@ -339,6 +359,7 @@ for fold, (tr_idx, va_idx) in enumerate(splits):
 
     # ---- A) LSTM with attention -------------------------------------------
     print("  [LSTM] training ...")
+    set_seed(42 + fold)
     model   = SepsisLSTM(N_FEAT, HIDDEN, N_LAYERS, DROPOUT).to(DEVICE)
     pos_w_t = torch.tensor([pos_w], dtype=torch.float32).to(DEVICE)
     crit    = nn.BCEWithLogitsLoss(pos_weight=pos_w_t)
@@ -414,6 +435,12 @@ for fold, (tr_idx, va_idx) in enumerate(splits):
     oof["XGBoost"][va_idx] = p
     fa = roc_auc_score(y_va, p)
     fold_aurocs["XGBoost"].append(fa)
+    if fa > best_xgb_auroc:
+        best_xgb_auroc = fa
+        # Store a copy of the model, or just keep reference since we create a new one each fold
+        best_xgb_model = xgb_clf
+        best_imputer = imputer
+        best_scaler = scaler
     print(f"  [XGBoost] fold AUROC: {fa:.4f}  (best iter: {xgb_clf.best_iteration})")
 
     # ---- C) Random Forest --------------------------------------------------
@@ -566,6 +593,14 @@ with open(out_json, "w") as f:
     }, f, indent=2)
 print(f"\nSaved: {out_json}")
 
+if best_xgb_model is not None:
+    best_xgb_path = os.path.join(PROCESSED_DIR, "unified_xgb_model.json")
+    best_xgb_model.save_model(best_xgb_path)
+    import joblib
+    joblib.dump(best_imputer, os.path.join(PROCESSED_DIR, "unified_imputer.pkl"))
+    joblib.dump(best_scaler, os.path.join(PROCESSED_DIR, "unified_scaler.pkl"))
+    print(f"Saved best XGBoost model (AUROC {best_xgb_auroc:.4f}) to {best_xgb_path}")
+
 # ---------------------------------------------------------------------------- #
 #  10. SUMMARY TABLE                                                            #
 # ---------------------------------------------------------------------------- #
@@ -609,44 +644,38 @@ if args.plot:
         "qSOFA (RR+SBP)":   (0, (3, 1, 1, 1)),  # dash-dot-dot
     }
 
-    # ROC + PR
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-    fig.suptitle(
-        f"Unified Benchmark  --  {SEQ_LEN}h seq | {HORIZON}h horizon | "
-        f"{N_FEAT} features + temporal stats | {N_FOLDS}-fold GroupKFold",
-        fontsize=12, fontweight="bold"
-    )
-
     for name, preds in oof.items():
+        # Individual ROC + PR
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        fig.suptitle(f"{name} Performance  --  {SEQ_LEN}h seq | {HORIZON}h horizon | {N_FOLDS}-fold", fontsize=12, fontweight="bold")
+        
         fpr, tpr, _ = roc_curve(seq_y, preds)
-        axes[0].plot(fpr, tpr, color=COLORS[name], lw=2, ls=STYLES[name],
-                     label=f"{name} (AUROC={all_metrics[name]['auroc']:.4f})")
+        axes[0].plot(fpr, tpr, color=COLORS.get(name, "#333333"), lw=2,
+                     label=f"AUROC = {all_metrics[name]['auroc']:.4f}")
+        axes[0].plot([0, 1], [0, 1], "k--", lw=1, label="Random")
+        axes[0].set_xlabel("False Positive Rate", fontsize=11)
+        axes[0].set_ylabel("True Positive Rate", fontsize=11)
+        axes[0].set_title(f"ROC Curve - {name}", fontsize=12, fontweight="bold")
+        axes[0].legend(fontsize=9, loc="lower right")
+        axes[0].grid(alpha=0.3)
 
-    axes[0].plot([0, 1], [0, 1], "k--", lw=1, label="Random")
-    axes[0].set_xlabel("False Positive Rate", fontsize=11)
-    axes[0].set_ylabel("True Positive Rate", fontsize=11)
-    axes[0].set_title("ROC Curves", fontsize=12, fontweight="bold")
-    axes[0].legend(fontsize=9, loc="lower right")
-    axes[0].grid(alpha=0.3)
-
-    for name, preds in oof.items():
         prec, rec, _ = precision_recall_curve(seq_y, preds)
-        axes[1].plot(rec, prec, color=COLORS[name], lw=2, ls=STYLES[name],
-                     label=f"{name} (AUPRC={all_metrics[name]['auprc']:.4f})")
+        axes[1].plot(rec, prec, color=COLORS.get(name, "#333333"), lw=2,
+                     label=f"AUPRC = {all_metrics[name]['auprc']:.4f}")
+        axes[1].axhline(seq_y.mean(), color="gray", ls="--", lw=1,
+                        label=f"Prevalence ({seq_y.mean():.3f})")
+        axes[1].set_xlabel("Recall", fontsize=11)
+        axes[1].set_ylabel("Precision", fontsize=11)
+        axes[1].set_title(f"Precision-Recall Curve - {name}", fontsize=12, fontweight="bold")
+        axes[1].legend(fontsize=9, loc="upper right")
+        axes[1].grid(alpha=0.3)
 
-    axes[1].axhline(seq_y.mean(), color="gray", ls="--", lw=1,
-                    label=f"Prevalence ({seq_y.mean():.3f})")
-    axes[1].set_xlabel("Recall", fontsize=11)
-    axes[1].set_ylabel("Precision", fontsize=11)
-    axes[1].set_title("Precision-Recall Curves", fontsize=12, fontweight="bold")
-    axes[1].legend(fontsize=9, loc="upper right")
-    axes[1].grid(alpha=0.3)
-
-    plt.tight_layout()
-    out = os.path.join(REPORTS_DIR, "unified_benchmark_roc_pr.png")
-    plt.savefig(out, dpi=300, bbox_inches="tight")
-    print("  Saved: unified_benchmark_roc_pr.png")
-    plt.close()
+        plt.tight_layout()
+        safe_name = name.replace(" ", "_").replace("(", "").replace(")", "").replace("+", "_")
+        out = os.path.join(REPORTS_DIR, f"{safe_name}_roc_pr.png")
+        plt.savefig(out, dpi=300, bbox_inches="tight")
+        print(f"  Saved: {safe_name}_roc_pr.png")
+        plt.close()
 
     # Per-fold AUROC grouped bar chart
     fig, ax = plt.subplots(figsize=(11, 5))
